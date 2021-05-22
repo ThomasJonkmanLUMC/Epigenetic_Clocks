@@ -1,0 +1,120 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+Link to the bacon package article: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-1131-9
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(bacon)
+
+#Register 10 cores as parallel workers.
+register(MulticoreParam(10, log=TRUE))
+
+options(stringsAsFactors = F)
+```
+
+#Run bacon on t-statistics obtained from the TWAS, in order to correct for any residual inflation and bias of the t-statistics.
+#NB: bacon will be run separately for each CpG. This is because CATE was run using a separate model for each CpG, using that CpG to predict the expression of all 14,000 genes. In other words, each CpG represents a single related set of t-statistics, generated from the same linear model.
+```{r}
+#Load matrix of t-statistics of clocks and reference CpGs.
+load("Output/Output_07b_CATE_clocks_effect_sizes.RData")
+load("Output/Output_07c_CATE_clocks_t_statistics.RData")
+
+#Set random seed (for reproducibility).
+set.seed(1)
+
+#Run BACON.
+bc.clocks <- bacon(effectsizes = es.clocks, teststatistics = t.clocks)
+
+#Extract the BACON-adjusted t-statistics and p-values for both clocks and refset.
+#es.clocks <- es(bc.clocks)
+#se.clocks <- se(bc.clocks)
+t.clocks <- tstat(bc.clocks)
+p.clocks <- pval(bc.clocks)
+```
+
+#Inspect output for clocks.
+```{r}
+#Inspect inflations and biases.
+inflations <- inflation(bc.clocks)
+summary(inflations)
+hist(inflations, 100)
+
+biases <- bias(bc.clocks)
+summary(biases)
+hist(biases, 100)
+
+#
+#Plot the distributions of the most and least inflated CpGs, and of the most and least biased CpGs.
+#
+
+#Least inflated (closest to 1)
+test <- abs(1-inflations)
+idx <- order(test, decreasing = F)
+inflations[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Least inflated")
+posteriors(bc.clocks, index = idx[1])
+
+#Most inflation
+idx <- order(inflations, decreasing = T)
+inflations[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Most inflation")
+posteriors(bc.clocks, index = idx[1])
+
+#Most deflation
+idx <- order(inflations, decreasing = F)
+inflations[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Most deflation")
+posteriors(bc.clocks, index = idx[1])
+
+
+#Least biased
+test <- abs(0-biases)
+idx <- order(test, decreasing = F)
+biases[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Least bias")
+posteriors(bc.clocks, index = idx[1])
+
+#Most negative bias
+idx <- order(biases, decreasing = F)
+biases[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Most negative bias")
+posteriors(bc.clocks, index = idx[1])
+
+#Most positive bias
+idx <- order(biases, decreasing = T)
+biases[idx[1:10]]
+fit(bc.clocks, n=50, index = idx[1], xlim = c(-6,6), main = "Most positive bias")
+posteriors(bc.clocks, index = idx[1])
+```
+
+#Save BACON output.
+```{r}
+
+#clocks
+save(bc.clocks, file = "Output/Output_08a.0_bacon_full_clocks.RData")
+save(t.clocks, file = "Output/Output_08a.1_bacon_t_clocks.RData")
+save(p.clocks, file = "Output/Output_08a.2_bacon_p_clocks.RData")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

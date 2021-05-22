@@ -1,0 +1,95 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+This script was written to prepare Genomic Ranges objects of 4 epigenetic clocks:
+- Hannum Bld: 71 CpGs (Hannum G et al. Genome-wide methylation profiles reveal quantitative views of human aging rates. Mol Cell. 2013)
+- Horvath PT: 353 CpGs (aDMCs) (Horvath S. DNA methylation age of human tissues and cell types. Genome Biol. 2013)
+- Horvath Skn/Bld: 391 CpGs (Horvath S et al. Epigenetic Clock for Skin and Blood Cells Applied to Hutchinson Gilford Progeria Syndrome and ex vivo Studies. Aging. 2018)
+- Zhang Bld/Slv: 514 aDMCs included in Zhang et al's epigenetic clock (Zhang Q et al. Improved precision of epigenetic clock estimates across tissues and its implication for biological ageing. Genome Med. 2019)
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(GenomicRanges)
+library(ggplot2)
+
+options(stringsAsFactors = F)
+```
+
+#Load data.
+```{r}
+#Load 450K array annotation.
+load("Output/Output_01b_450K_annotation.RData")
+
+#Load 4 aDMP-sets.
+hannum <- read.csv("Input/Input_02b_hannum_cpgs.csv")
+horvath <- read.csv("Input/Input_02a_horvath_cpgs.csv")
+skinblood <- read.csv("Input/Input_02d_skinblood.cpgs.csv")
+zhang <- read.csv("Input/Input_02c_zhang_cpgs.csv")
+```
+
+#Prepare GRanges objects of all 4 CpG sets, and also make a GRanges object which contains the CpGs of all 4 clocks.
+```{r}
+hannum <- sort(sortSeqlevels(ann450K[hannum$CpG]))
+horvath <- sort(sortSeqlevels(ann450K[horvath$CpG]))
+skinblood <- sort(sortSeqlevels(ann450K[na.omit(match(skinblood$CpG, names(ann450K)))]))
+zhang <- sort(sortSeqlevels(ann450K[zhang$CpG]))
+
+#Union of the 4 clocks.
+all.clocks <- unique(c(hannum, horvath, skinblood, zhang))
+all.clocks$hannum <- F
+all.clocks$horvath <- F
+all.clocks$skinblood <- F
+all.clocks$zhang <- F
+
+#Add the information on which clocks contain each of the CpGs (NB: some CpGs are present in multiple clocks).
+all.clocks$hannum[match(names(hannum), names(all.clocks))] <- T
+all.clocks$horvath[match(names(horvath), names(all.clocks))] <- T
+all.clocks$skinblood[match(names(skinblood), names(all.clocks))] <- T
+all.clocks$zhang[match(names(zhang), names(all.clocks))] <- T
+all.clocks
+```
+
+#Save the CpG sets.
+```{r}
+save(hannum, horvath, skinblood, zhang, all.clocks, file = "Output/Output_02a_clocks.RData")
+```
+
+#Prepare one reference CpG set for the clocks.
+NB: the reference set will be as large as the combination of CpGs from all 4 clocks (with duplicates removed), which is 1146 CpGs in total.
+```{r}
+#Set the pseudo-random number generator seed for reproducibility.
+set.seed(1)
+
+idx <- match(names(all.clocks), names(ann450K))
+non.clock <- ann450K[-idx]
+idx <- sort(sample(1:length(non.clock), length(all.clocks), replace = F))
+refset <- non.clock[idx]
+refset
+```
+
+#Save the reference CpG set.
+```{r}
+save(non.clock, refset, file = "Output/Output_02b_refset.RData")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

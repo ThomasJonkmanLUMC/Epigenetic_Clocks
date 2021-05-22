@@ -1,0 +1,289 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+<Description goes here>
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(BBMRIomics)
+library(irlba)
+library(ggfortify)
+library(reshape2)
+library(ggplot2)
+library(cate)
+library(ggbiplot)
+library(foreach)
+library(doParallel)
+
+#Register 10 cores as parallel workers.
+registerDoParallel(cores=10)
+
+options(stringsAsFactors = T)
+```
+
+#Load data.
+```{r}
+load("Output/Output_03a_twas_data.RData")
+```
+
+#
+#
+#Clock CpGs
+#
+#
+
+
+#Prepare data.
+```{r}
+mvalues <- mvalues.clocks
+
+#Remove problem samples.
+#There are 2 covariates which contain certain levels causing singularities if they are included into the model:
+#flowcell_number: levels "30a" and "30b".
+#sample_plate: levels "OV0192DNA001" and "OV0192DNA002".
+
+idx <- which(mvalues$flowcell_num == "30a" | mvalues$flowcell_num == "30b" | mvalues$sample_plate == "OV0192DNA001" | mvalues$sample_plate == "OV0192DNA002")
+
+#Now remove them.
+mvalues <- mvalues[,-idx]
+
+#Also remove the level from the factor variable(s) by re-declaring the factor (removes all unused levels).
+mvalues$flowcell_num <- factor(mvalues$flowcell_num)
+mvalues$sample_plate <- factor(mvalues$sample_plate)
+
+mvalues
+```
+
+#Prepare CATE.
+```{r}
+#As an initialization step, define an empty "cpg" object (this will be filled in later for each iteration of the TWAS).
+mvalues$cpg <- numeric(length = ncol(mvalues))
+
+#Add the formula to the SummarizedExperiment.
+metadata(mvalues)$formula <- ~ cpg + biobank_id + sampling_age + PredictedSex + baso_perc_imputed + eos_perc_imputed + lymph_perc_imputed + mono_perc_imputed + sample_plate + sentrix_position + flowcell_num
+
+#Select covariates without NAs.
+covariates <- get_all_vars(metadata(mvalues)$formula, data=colData(mvalues))
+nas <- apply(covariates, 1, anyNA)
+mvalues <- mvalues[, !nas]
+mvalues
+
+#Make a model matrix.
+design <- model.matrix(metadata(mvalues)$formula, data=colData(mvalues))
+
+#Create a matrix of the assays.
+M.cate <- t(assay(mvalues))
+#M.cate[1:10,1:10]
+
+#Match RNA-seq samples to the DNA-methylation samples.
+mvalues
+idx <- match(colnames(mvalues), colnames(RIN.counts))
+RIN.counts <- RIN.counts[,idx]
+dim(RIN.counts)
+
+#Transpose the RNA-seq data before running the model, so that it is in the right format (rownames should be the sample names).
+count.cate <- t(RIN.counts)
+
+dim(count.cate)
+
+#Define TWAS using CATE to model gene expression, using the methylation of CpGs as covariates and estimating both known and estimated unknown confounders.
+TWAS <- function(i){
+  
+  #Check progress
+  print(paste0("CpG ", i, ": ", rownames(mvalues)[i]))
+  
+  #Select 1 CpG, and add it to the design matrix as the primary variable.
+  cpg <- M.cate[,i]
+  design[,2] <- cpg
+  
+  #Run the TWAS for this CpG.
+  twas <- tryCatch({
+    results.cate <- cate.fit(design[,2,drop=FALSE], design[,-2], count.cate, r = 5, calibrate=FALSE, fa.method="ml", adj.method = "naive")
+    }, error = identity)
+  if(is.null(twas$message)){
+    
+    #Extract the beta-estimates and p-values, and save them as a dataframe.
+    dat <- as.data.frame(cbind(results.cate$beta, results.cate$beta.t, results.cate$beta.p.value))
+    colnames(dat) <- c("beta", "t-statistic", "p-value")
+    
+  } else {
+    #make output structure a dataframe.
+    dat <- data.frame("CpG_name" = rownames(mvalues)[1], "Error" = "Didn't converge")
+  }
+  return(dat)
+}
+```
+
+#Run CATE.
+```{r}
+idx <- 1:ncol(M.cate)
+CATE.clocks <- foreach(i = idx, .errorhandling = 'stop') %dopar% TWAS(i)
+```
+
+#Check output.
+```{r}
+idx <- 1:length(CATE.clocks)
+
+test <- foreach(i = idx, .combine = rbind) %do% dim(CATE.clocks[[i]])
+table(test[,1] == ncol(count.cate)) #Should be 100% TRUE. If this is FALSE for some CpGs, the TWAS went wrong for those.
+```
+
+#Save output.
+```{r}
+save(CATE.clocks, file = "Output/Output_07a_CATE_clocks_full.RData")
+
+#Split the output into beta-values and p-values.
+idx <- 1:length(CATE.clocks)
+
+#Effect sizes.
+es.clocks <- foreach(i = idx, .combine = cbind) %dopar% CATE.clocks[[i]][,1]
+dim(es.clocks)
+rownames(es.clocks) <- colnames(count.cate)
+colnames(es.clocks) <- colnames(M.cate)
+
+#t-statistics.
+t.clocks <- foreach(i = idx, .combine = cbind) %dopar% CATE.clocks[[i]][,2]
+dim(t.clocks)
+rownames(t.clocks) <- colnames(count.cate)
+colnames(t.clocks) <- colnames(M.cate)
+
+#p-values (unadjusted).
+p.clocks <- foreach(i = idx, .combine = cbind) %dopar% CATE.clocks[[i]][,3]
+dim(p.clocks)
+rownames(p.clocks) <- colnames(count.cate)
+colnames(p.clocks) <- colnames(M.cate)
+
+save(es.clocks, file = "Output/Output_07b_CATE_clocks_effect_sizes.RData")
+save(t.clocks, file = "Output/Output_07c_CATE_clocks_t_statistics.RData")
+save(p.clocks, file = "Output/Output_07d_CATE_clocks_p_values.RData")
+```
+
+#
+#
+#Reference CpGs
+#
+#
+
+#Prepare data.
+```{r}
+rm(CATE.clocks)
+mvalues <- mvalues.refset
+
+#Remove problem samples.
+#There are 2 covariates which contain certain levels causing singularities if they are included into the model:
+#flowcell_number: levels "30a" and "30b".
+#sample_plate: levels "OV0192DNA001" and "OV0192DNA002".
+
+idx <- which(mvalues$flowcell_num == "30a" | mvalues$flowcell_num == "30b" | mvalues$sample_plate == "OV0192DNA001" | mvalues$sample_plate == "OV0192DNA002")
+
+#Now remove them.
+mvalues <- mvalues[,-idx]
+
+#Also remove the level from the factor variable(s) by re-declaring the factor (removes all unused levels).
+mvalues$flowcell_num <- factor(mvalues$flowcell_num)
+mvalues$sample_plate <- factor(mvalues$sample_plate)
+
+mvalues
+```
+
+#Prepare CATE.
+```{r}
+#As an initialization step, define an empty "cpg" object (this will be filled in later for each iteration of the TWAS).
+mvalues$cpg <- numeric(length = ncol(mvalues))
+
+#Add the formula to the SummarizedExperiment.
+metadata(mvalues)$formula <- ~ cpg + biobank_id + sampling_age + PredictedSex + baso_perc_imputed + eos_perc_imputed + lymph_perc_imputed + mono_perc_imputed + sample_plate + sentrix_position + flowcell_num
+
+#Select covariates without NAs.
+covariates <- get_all_vars(metadata(mvalues)$formula, data=colData(mvalues))
+nas <- apply(covariates, 1, anyNA)
+mvalues <- mvalues[, !nas]
+mvalues
+
+#Make a model matrix.
+design <- model.matrix(metadata(mvalues)$formula, data=colData(mvalues))
+
+#Create a matrix of the assays.
+M.cate <- t(assay(mvalues))
+#M.cate[1:10,1:10]
+
+#Match RNA-seq samples to the DNA-methylation samples.
+mvalues
+idx <- match(colnames(mvalues), colnames(RIN.counts))
+RIN.counts <- RIN.counts[,idx]
+dim(RIN.counts)
+
+#Transpose the RNA-seq data before running the model, so that it is in the right format (rownames should be the sample names).
+count.cate <- t(RIN.counts)
+
+dim(count.cate)
+```
+
+#Define TWAS using CATE to model gene expression, using the methylation of CpGs as covariates and estimating both known and estimated unknown confounders.
+(Omitted, is already done above)
+
+#Run CATE.
+```{r}
+idx <- 1:ncol(M.cate)
+CATE.refset <- foreach(i = idx, .errorhandling = 'stop') %dopar% TWAS(i)
+```
+
+#Check output.
+```{r}
+idx <- 1:length(CATE.refset)
+
+test <- foreach(i = idx, .combine = rbind) %do% dim(CATE.refset[[i]])
+table(test[,1] == ncol(count.cate)) #Should be 100% TRUE. If this is FALSE for some CpGs, the TWAS went wrong for those.
+```
+
+#Save output.
+```{r}
+save(CATE.refset, file = "Output/Output_07e_CATE_refset_full.RData")
+
+#Split the output into beta-values and p-values.
+idx <- 1:length(CATE.refset)
+
+#Effect sizes.
+es.refset <- foreach(i = idx, .combine = cbind) %dopar% CATE.refset[[i]][,1]
+dim(es.refset)
+rownames(es.refset) <- colnames(count.cate)
+colnames(es.refset) <- colnames(M.cate)
+
+#t-statistics.
+t.refset <- foreach(i = idx, .combine = cbind) %dopar% CATE.refset[[i]][,2]
+dim(t.refset)
+rownames(t.refset) <- colnames(count.cate)
+colnames(t.refset) <- colnames(M.cate)
+
+#p-values (unadjusted).
+p.refset <- foreach(i = idx, .combine = cbind) %dopar% CATE.refset[[i]][,3]
+dim(p.refset)
+rownames(p.refset) <- colnames(count.cate)
+colnames(p.refset) <- colnames(M.cate)
+
+save(es.refset, file = "Output/Output_07f_CATE_refset_effect_sizes.RData")
+save(t.refset, file = "Output/Output_07g_CATE_refset_t_statistics.RData")
+save(p.refset, file = "Output/Output_07h_CATE_refset_p_values.RData")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

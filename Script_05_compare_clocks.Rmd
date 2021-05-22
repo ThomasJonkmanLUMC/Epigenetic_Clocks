@@ -1,0 +1,316 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+In this script, the DNA methylation clocks will be used to predict age, and their performance will be tested with each other. Also, the correlation of the M-values of these CpGs will be analyzed within each clock (to see if there seen to be higher-order processes going on), and between clocks (to see if the clocks measure similar things).
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(GenomicRanges)
+library(Hmisc)
+library(SummarizedExperiment)
+library(gplots)
+
+options(stringsAsFactors = F)
+```
+
+#Load data.
+```{r}
+load("Output/Output_02a_all_aDMP_sets.RData")
+load("Input/Input_05a_heatmap_function.RData")
+load("Output/Output_03_twas_data.RData")
+load("Input/Input_05b_JI_probes_mvalues.RData")
+```
+
+#Calculate the absolute number of overlapping CpGs between clocks.
+```{r}
+#hannum overlaps
+OL11 <- length(na.omit(match(names(hannum), names(hannum))))
+OL12 <- length(na.omit(match(names(hannum), names(horvath))))
+OL13 <- length(na.omit(match(names(hannum), names(skinblood))))
+OL14 <- length(na.omit(match(names(hannum), names(zhang))))
+
+#horvath overlaps
+OL21 <- length(na.omit(match(names(horvath), names(hannum))))
+OL22 <- length(na.omit(match(names(horvath), names(horvath))))
+OL23 <- length(na.omit(match(names(horvath), names(skinblood))))
+OL24 <- length(na.omit(match(names(horvath), names(zhang))))
+
+#skinblood overlaps
+OL31 <- length(na.omit(match(names(skinblood), names(hannum))))
+OL32 <- length(na.omit(match(names(skinblood), names(horvath))))
+OL33 <- length(na.omit(match(names(skinblood), names(skinblood))))
+OL34 <- length(na.omit(match(names(skinblood), names(zhang))))
+
+#zhang overlaps
+OL41 <- length(na.omit(match(names(zhang), names(hannum))))
+OL42 <- length(na.omit(match(names(zhang), names(horvath))))
+OL43 <- length(na.omit(match(names(zhang), names(skinblood))))
+OL44 <- length(na.omit(match(names(zhang), names(zhang))))
+
+clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+OLtab <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total CpGs"), c(clock.names, "Total CpGs")))
+OLtab[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
+OLtab[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
+OLtab[3,1:4] <- as.numeric(c(OL31, OL32, OL33, OL34))
+OLtab[4,1:4] <- as.numeric(c(OL41, OL42, OL43, OL44))
+
+OLtab[5,] <- c(length(hannum), length(horvath), length(skinblood), length(zhang), length(unique(names(all.clocks))))
+OLtab[,5] <- OLtab[5,]
+OLtab
+
+write.csv(OLtab, file = "Output/Output_05a_clock_overlaps.csv")
+```
+
+#To account for the differing clock sizes, calculate the Jaccard indices of two sets, divided by the maximum possible Jaccard index which would be found if all CpGs of the smaller set were also in the large set.
+```{r}
+Overlaps <- function(set1, set2){
+  (length(intersect(names(set1), names(set2))) / length(union(names(set1), names(set2)))) / 
+  (length(set1) / length(union(names(set1), names(set2))))
+}
+
+OL11 <- Overlaps(hannum, hannum)
+OL12 <- Overlaps(hannum, horvath)
+OL13 <- Overlaps(hannum, skinblood)
+OL14 <- Overlaps(hannum, zhang)
+
+OL21 <- Overlaps(horvath, hannum)
+OL22 <- Overlaps(horvath, horvath)
+OL23 <- Overlaps(horvath, skinblood)
+OL24 <- Overlaps(horvath, zhang)
+
+OL31 <- Overlaps(skinblood, hannum)
+OL32 <- Overlaps(skinblood, horvath)
+OL33 <- Overlaps(skinblood, skinblood)
+OL34 <- Overlaps(skinblood, zhang)
+
+OL41 <- Overlaps(zhang, hannum)
+OL42 <- Overlaps(zhang, horvath)
+OL43 <- Overlaps(zhang, skinblood)
+OL44 <- Overlaps(zhang, zhang)
+
+relative.overlaps <- round(as.data.frame(rbind(
+  c(OL11, OL12, OL13, OL14),
+  c(OL21, OL22, OL23, OL24),
+  c(OL31, OL32, OL33, OL34),
+  c(OL41, OL42, OL43, OL44)
+)), digits = 2)
+rownames(relative.overlaps) <- colnames(relative.overlaps) <- clock.names
+
+relative.overlaps <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total CpGs"), c(clock.names, "Total CpGs")))
+relative.overlaps[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
+relative.overlaps[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
+relative.overlaps[3,1:4] <- as.numeric(c(OL31, OL32, OL33, OL34))
+relative.overlaps[4,1:4] <- as.numeric(c(OL41, OL42, OL43, OL44))
+
+relative.overlaps[5,] <- c(length(hannum), length(horvath), length(skinblood), length(zhang), length(unique(names(all.clocks))))
+relative.overlaps[,5] <- relative.overlaps[5,]
+relative.overlaps <- round(relative.overlaps, digits = 2)
+relative.overlaps
+
+write.csv(relative.overlaps, file = "Output/Output_05b_clock_overlap_relative.overlaps.csv")
+```
+
+#Make a boxplot figure per clock, which contains the maximum correlations of each of that clock's CpGs with any CpG of one of the three other clocks (for instance, for each hannum CpG, find the horvath CpG with the largest correlation). This way, you can get an impression if any of the CpGs of the other clocks contain the same information as the CpGs of the index clock.
+```{r}
+#Regress out age from the mvalues.
+fit <- lm(t(assay(mvalues.clocks)) ~ mvalues.clocks$sampling_age)
+res <- t(fit$residuals)
+
+#Calculate the correlation matrix. Also make an absolute copy of it to test whether correlations are different from 0 in either direction.
+cor.clocks <- cor(t(res), method = "pearson")
+cor.abs <- abs(cor.clocks)
+cor.abs[1:10,1:10]
+
+#Make a copy of the absolute correlations within a clock; for this, the correlations of 1 are filtered out.
+cor.abs.internal <- cor.abs
+cor.abs.internal[as.numeric(cor.abs.internal) == 1] <- 0
+cor.abs.internal[1:10,1:10]
+
+#Make a vector containing the maximum correlation of each clock-clock combination of CpGs (e.g. for each Hannum CpG, find the Horvath CpG which has the strongest correlation).
+#NB: for correlations between 2 clocks, I chose to leave in the correlations of 1, which represent CpGs which are shared between the 2 clocks. However, for internal correlations, I filtered them out, since the 1's are meaningless here.
+Find.Max.Correlations <- function(cors, set1, set2){
+  cor.subset <- cors[rownames(cors) %in% names(set1),rownames(cors) %in% names(set2)]
+  apply(cor.subset, 1, max)
+}
+
+cor.11 <- Find.Max.Correlations(cor.abs.internal, hannum, hannum)
+cor.12 <- Find.Max.Correlations(cor.abs, hannum, horvath)
+cor.13 <- Find.Max.Correlations(cor.abs, hannum, skinblood)
+cor.14 <- Find.Max.Correlations(cor.abs, hannum, zhang)
+round(rbind(summary(cor.11), summary(cor.12), summary(cor.13), summary(cor.14)), digits = 2)
+
+cor.21 <- Find.Max.Correlations(cor.abs, horvath, hannum)
+cor.22 <- Find.Max.Correlations(cor.abs.internal, horvath, horvath)
+cor.23 <- Find.Max.Correlations(cor.abs, horvath, skinblood)
+cor.24 <- Find.Max.Correlations(cor.abs, horvath, zhang)
+round(rbind(summary(cor.21), summary(cor.22), summary(cor.23), summary(cor.24)), digits = 2)
+
+cor.31 <- Find.Max.Correlations(cor.abs, skinblood, hannum)
+cor.32 <- Find.Max.Correlations(cor.abs, skinblood, horvath)
+cor.33 <- Find.Max.Correlations(cor.abs.internal, skinblood, skinblood)
+cor.34 <- Find.Max.Correlations(cor.abs, skinblood, zhang)
+round(rbind(summary(cor.31), summary(cor.32), summary(cor.33), summary(cor.34)), digits = 2)
+
+cor.41 <- Find.Max.Correlations(cor.abs, zhang, hannum)
+cor.42 <- Find.Max.Correlations(cor.abs, zhang, horvath)
+cor.43 <- Find.Max.Correlations(cor.abs, zhang, skinblood)
+cor.44 <- Find.Max.Correlations(cor.abs.internal, zhang, zhang)
+round(rbind(summary(cor.41), summary(cor.42), summary(cor.43), summary(cor.44)), digits = 2)
+
+#Merge the maximum correlations of each hannum CpG with all CpGs of each clock (including itself). Sort the dataframe by highest internal correlations.
+library(reshape)
+clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+cor.hannum <- as.data.frame(rbind(cor.11, cor.12, cor.13, cor.14))
+cor.hannum <- cor.hannum[,order(cor.hannum[1,])]
+cor.hannum$clock.1 <- clock.names[1]
+cor.hannum$clock.2 <- clock.names
+cor.hannum
+melt.hannum <- melt(cor.hannum, id.vars = c("clock.1", "clock.2"))
+colnames(melt.hannum) <- c("clock.1", "clock.2", "CpG", "max.cor")
+head(melt.hannum)
+
+#Merge the maximum correlations of each horvath CpG with all CpGs of each clock (including itself). Sort the dataframe by highest internal correlations.
+cor.horvath <- as.data.frame(rbind(cor.21, cor.22, cor.23, cor.24))
+cor.horvath <- cor.horvath[,order(cor.horvath[2,])]
+cor.horvath$clock.1 <- clock.names[2]
+cor.horvath$clock.2 <- clock.names
+cor.horvath
+melt.horvath <- melt(cor.horvath, id.vars = c("clock.1", "clock.2"))
+colnames(melt.horvath) <- c("clock.1", "clock.2", "CpG", "max.cor")
+head(melt.horvath)
+
+#Merge the maximum correlations of each skinblood CpG with all CpGs of each clock (including itself). Sort the dataframe by highest internal correlations.
+cor.skinblood <- as.data.frame(rbind(cor.31, cor.32, cor.33, cor.34))
+cor.skinblood <- cor.skinblood[,order(cor.skinblood[3,])]
+cor.skinblood$clock.1 <- clock.names[3]
+cor.skinblood$clock.2 <- clock.names
+cor.skinblood
+melt.skinblood <- melt(cor.skinblood, id.vars = c("clock.1", "clock.2"))
+colnames(melt.skinblood) <- c("clock.1", "clock.2", "CpG", "max.cor")
+head(melt.skinblood)
+
+#Merge the maximum correlations of each zhang CpG with all CpGs of each clock (including itself). Sort the dataframe by highest internal correlations.
+cor.zhang <- as.data.frame(rbind(cor.41, cor.42, cor.43, cor.44))
+cor.zhang <- cor.zhang[,order(cor.zhang[4,])]
+cor.zhang$clock.1 <- clock.names[4]
+cor.zhang$clock.2 <- clock.names
+cor.zhang
+melt.zhang <- melt(cor.zhang, id.vars = c("clock.1", "clock.2"))
+colnames(melt.zhang) <- c("clock.1", "clock.2", "CpG", "max.cor")
+head(melt.zhang)
+
+#Make 4 different figures, each with the max correlations of a clock with the other clocks.
+plot.theme <- list(
+  theme_grey(base_size = 26), 
+  theme(plot.title = element_blank(), 
+        axis.title.x = element_blank(), axis.title.y = element_blank(), 
+        axis.text.y=element_text(face="bold"), axis.text.x = element_text(face = "bold", angle = 0, hjust = 0.5) 
+        ),
+  coord_cartesian(ylim = c(0, 1)),
+  scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)),
+  ggtitle("Maximum correlation of clock CpGs"),
+  xlab("Clock"),
+  ylab("Maximum correlation")
+)
+contour.colors <- c("#ff3333", "#0066ff", "#00cc00", "#9900ff")
+
+#hannum
+test <- melt.hannum[melt.hannum$clock.1 != melt.hannum$clock.2,]
+test$clock.2 <- as.factor(test$clock.2)
+levels(test$clock.2) <- gsub(" ", "\n", levels(test$clock.2))
+ggplot(data = test, aes(x = clock.2, y = max.cor, color = clock.2)) + geom_boxplot(width = 0.6, lwd = 2, outlier.size = 3, color = contour.colors[1]) + plot.theme
+ggsave(filename = "Output/Plot_05a.1_Maximum_correlations_hannum.png", width = 5, height = 4, dpi = 300)
+
+#horvath
+test <- melt.horvath[melt.horvath$clock.1 != melt.horvath$clock.2,]
+test$clock.2 <- as.factor(test$clock.2)
+test$clock.2 <- factor(test$clock.2, levels = c(clock.names[2], clock.names[-2]))
+levels(test$clock.2) <- gsub(" ", "\n", levels(test$clock.2))
+ggplot(data = test, aes(x = clock.2, y = max.cor, color = clock.2)) + geom_boxplot(width = 0.6, lwd = 2, outlier.size = 3, color = contour.colors[2]) + plot.theme
+ggsave(filename = "Output/Plot_05a.1_Maximum_correlations_horvath.png", width = 5, height = 4, dpi = 300)
+
+#skinblood
+test <- melt.skinblood[melt.skinblood$clock.1 != melt.skinblood$clock.2,]
+test$clock.2 <- as.factor(test$clock.2)
+test$clock.2 <- factor(test$clock.2, levels = c(clock.names[3], clock.names[-3]))
+levels(test$clock.2) <- gsub(" ", "\n", levels(test$clock.2))
+ggplot(data = test, aes(x = clock.2, y = max.cor, color = clock.2)) + geom_boxplot(width = 0.6, lwd = 2, outlier.size = 3, color = contour.colors[3]) + plot.theme
+ggsave(filename = "Output/Plot_05a.1_Maximum_correlations_skinblood.png", width = 5, height = 4, dpi = 300)
+
+#zhang
+test <- melt.zhang[melt.zhang$clock.1 != melt.zhang$clock.2,]
+test$clock.2 <- as.factor(test$clock.2)
+test$clock.2 <- factor(test$clock.2, levels = c(clock.names[4], clock.names[-4]))
+levels(test$clock.2) <- gsub(" ", "\n", levels(test$clock.2))
+ggplot(data = test, aes(x = clock.2, y = max.cor, color = clock.2)) + geom_boxplot(width = 0.6, lwd = 2, outlier.size = 3, color = contour.colors[4]) + plot.theme
+ggsave(filename = "Output/Plot_05a.1_Maximum_correlations_zhang.png", width = 5, height = 4, dpi = 300)
+```
+
+#Check whether the cpgs cluster in a similar way in terms of correlation as in terms of association with gene expression.
+
+#                                                                                                   #
+#                                                                                                   #
+#                                                                                                   #
+    Move this chunk to script 9; it doesn't really fit here, because it uses output from script 9.
+#                                                                                                   #
+#                                                                                                   #
+#                                                                                                   #
+
+```{r}
+#NB: run script 9 for the clocks to get expr.clusters.
+cor.clusters <- cutree(x.hclust, k=4)
+expr.clusters <- cutree(y, k=4)
+
+#Overlap of all cpgs with the subset of cpgs which associate with gene expression.
+length(intersect(names(cor.clusters), names(expr.clusters))) / length(union(names(cor.clusters), names(expr.clusters)))
+
+#Overlap of the correlation-clusters and the association-clusters (k=4 for both).
+row1 <- c(
+  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 1])),
+  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 2])),
+  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 3])),
+  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 4]))
+)
+
+row2 <- c(
+  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 1])),
+  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 2])),
+  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 3])),
+  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 4]))
+)
+
+row3 <- c(
+  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 1])),
+  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 2])),
+  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 3])),
+  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 4]))
+)
+
+row4 <- c(
+  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 1])),
+  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 2])),
+  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 3])),
+  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 4]))
+)
+
+cluster.overlap <- rbind(row1, row2, row3, row4)
+dimnames(cluster.overlap) <- list(c("cor1", "cor2", "cor3", "cor4"), c("expr1", "expr2", "expr3", "expr4"))
+cluster.overlap
+```

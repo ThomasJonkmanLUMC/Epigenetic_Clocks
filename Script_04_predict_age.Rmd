@@ -1,0 +1,588 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+In this script, the DNA methylation clocks will be used to predict age.
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(SummarizedExperiment)
+library(ggplot2)
+library(gplots)
+library(reshape2)
+
+options(stringsAsFactors = F)
+```
+
+#Load DNA methylation data as beta-values (large, will take ~30 minutes to load. If you have already run this script before, start at the next chunk).
+```{r}
+# library(BBMRIomics)
+# data(methData_Betas_BIOS_Freeze2_unrelated)
+# #data(package = "BBMRIomics")
+# 
+# #Select only CpGs which belong to at least one of the 4 clocks.
+# load("Output/Output_02a_all_aDMP_sets.RData")
+# rm(horvath, hannum, zhang, skinblood)
+# 
+# #Prepare a dataframe containing chronological age of all participants.
+# age.file <- na.omit(data.frame(ID = colnames(betas), age = colData(betas)$sampling_age))
+# 
+# #Select all autosomal clock CpGs (stored in the "all.clocks" object), plus the one cpg in the skinblood clock which maps to the X-chromosome (cg01892695).
+# betas <- betas[c(names(all.clocks), "cg01892695"),]
+# 
+# #For some participants, age is unknown. Remove those participants.
+# idx <- na.omit(match(age.file$ID, colnames(betas)))
+# length(idx)
+# betas <- betas[,na.omit(match(age.file$ID, colnames(betas)))]
+# betas
+# 
+# #Save the filtered beta values.
+# save(betas, file = "Output/Output_04a_clock_beta_values.RData")
+# 
+# #Clear environment.
+# rm(list = ls())
+```
+
+#Put the data of the 4 clocks in the format the authors recommend.
+```{r}
+#Load the beta-values.
+load("Output/Output_04a_clock_beta_values.RData")
+betas
+
+#OPTIONAL: select only the samples which were selected for the TWAS.
+load("Output/Output_03a_twas_data.RData")
+rm(counts, RIN.counts)
+idx <- which(mvalues.clocks$flowcell_num == "30a" | mvalues.clocks$flowcell_num == "30b" | mvalues.clocks$sample_plate == "OV0192DNA001" | mvalues.clocks$sample_plate == "OV0192DNA002")
+mvalues.clocks <- mvalues.clocks[,-idx]
+betas <- betas[, colnames(mvalues.clocks)]
+betas
+
+age.file <- na.omit(data.frame(ID = colnames(betas), age = colData(betas)$sampling_age))
+
+#Load the coefficients of all 4 aDMP clocks.
+load("Input/Input_04a_clock_coefficients.RData")
+
+horvath <- clock.coef$horvath
+hannum <- clock.coef$hannum
+zhang <- clock.coef$zhang
+skinblood <- clock.coef$skinblood
+
+#Hannum wants the DNA-methylation data to be in a format where samples are rows and probes are columns.
+betas.hannum <- betas[hannum[-1,]$Probe,]
+betas.hannum <- t(assay(betas.hannum))
+betas.hannum[1:10,1:10]
+
+#Horvath wants the DNA-methylation data to be in a format where probes are rows and samples are columns. Additionally, he uses the first column for the probe names (instead of the row names).
+betas.horvath <- betas[horvath[-1,]$Probe,]
+probeIDs <- data.frame(probeID = rownames(betas.horvath))
+datmat <- as.data.frame(assay(betas.horvath))
+betas.horvath <- cbind(probeIDs, datmat)
+rownames(betas.horvath) <- 1:nrow(betas.horvath)
+betas.horvath[1:10,1:10]
+
+#Horvath (the author of the skinblood clock) wants the DNA-methylation data to be in a format where probes are rows and samples are columns. Additionally, he uses the first column for the probe names (instead of the row names).
+idx <- na.omit(match(skinblood[-1,]$Probe, rownames(betas)))
+betas.skinblood <- betas[idx,]
+probeIDs <- data.frame(probeID = rownames(betas.skinblood))
+datmat <- as.data.frame(assay(betas.skinblood))
+betas.skinblood <- cbind(probeIDs, datmat)
+rownames(betas.skinblood) <- 1:nrow(betas.skinblood)
+betas.skinblood[1:10,1:10]
+
+#Zhang wants the DNA-methylation data to be in a format where probes are rows and samples are columns.
+#NB: Zhang uses normalized beta-values, instead of raw beta-values (like the other clocks). Beta-values of all measured 450K-CpGs were normalized (using the "scale" function), so that each sample had a mean of 0 and an sd of 1. Only then were the zhang-probes selected. 
+#The normalized beta-values of these probes are loaded in here.
+load("Input/Input_04b_betas_zhang_normalized.RData")
+betas.zhang[1:10,1:10]
+```
+
+#Next up, the age prediction of the 4 clocks will be tested.
+
+
+#Clock 1: Hannum et al blood clock
+NB: this clock does not include an intercept, so an intercept of 0 was added.
+```{r}
+#Load the data (IND * Probe, each row represents one individual, it should be "RAW BETA" DNA methylation value).
+data <- t(betas.hannum)
+
+#Get the coefficients of each probe.
+coef <- hannum
+colnames(coef) <- c("probe", "coef")
+rownames(coef) <- coef$probe
+
+intercept<-coef[1,2]
+coef<-coef[-1,]
+rownames(coef) <- coef$probe
+
+#Do age prediction.
+pred <- coef$coef%*%data+intercept
+
+#Save the predicted result.
+age.raw <- age.file
+pred <- pred[,age.raw$ID]
+age.raw$pred <- as.double(pred)
+head(age.raw)
+
+#Save predicted ages.
+pred.hannum <- age.raw
+```
+
+#Clock 2: Horvath pan-tissue clock
+NB: this clock was built using transformed age, instead of normal age. This is reflected in the "anti-trafo" function, which transforms the age from the transformed scale back into "normal" age.
+```{r}
+#Function for transforming age.
+adult.age1 <- 20
+anti.trafo <- function(x,adult.age=adult.age1) {
+  ifelse(x<0, (1+adult.age)*exp(x)-1, (1+adult.age)*x+adult.age)
+}
+
+data <- t(betas.horvath[, -1])
+coef <- horvath
+colnames(data) <- coef$Probe[-1]
+data <- as.data.frame(data)
+
+# Reality check: the following output should only contain numeric values.
+# Further, the column names should be CpG identifiers (cg numbers), and the number of rows should equal the number of samples (Illumina arrays).
+data[1:5, 1:5]
+dim(data)
+
+#Output/Output DNAm age estimator for the pan-tissue clock.
+pred <- as.numeric(anti.trafo(coef$Coefficient[1]+as.matrix(data)%*% as.numeric(coef$Coefficient[-1])))
+names(pred) <- rownames(data)
+head(pred)
+age.raw <- age.file
+pred <- pred[age.raw$ID]
+age.raw$pred<-as.double(pred)
+head(age.raw)
+
+#Save predicted ages.
+pred.horvath <- age.raw
+```
+
+#Clock 3: Horvath skin/blood clock.
+NB: this clock was built using transformed age, instead of normal age. This is reflected in the "anti-trafo" function, which transforms the age from the transformed scale back into "normal" age.
+```{r}
+#Function for transforming age.
+adult.age1 <- 20
+anti.trafo <- function(x,adult.age=adult.age1) {
+  ifelse(x<0, (1+adult.age)*exp(x)-1, (1+adult.age)*x+adult.age)
+}
+
+data <- t(betas.skinblood[, -1])
+coef <- skinblood
+
+idx <- match(betas.skinblood$probeID, coef$Probe)
+colnames(data) <- coef$Probe[idx]
+data <- as.data.frame(data)
+
+# Reality check: the following output should only contain numeric values.
+# Further, the column names should be CpG identifiers (cg numbers), and the number of rows should equal the number of samples (Illumina arrays).
+data[1:5, 1:5]
+dim(data)
+
+#Output/Output DNAm age estimator for the pan-tissue clock.
+pred <- as.numeric(anti.trafo(coef$Coefficient[1]+as.matrix(data)%*% as.numeric(coef$Coefficient[idx])))
+names(pred) <- rownames(data)
+head(pred)
+age.raw <- age.file
+pred <- pred[age.raw$ID]
+age.raw$pred<-as.double(pred)
+head(age.raw)
+
+#Save predicted ages.
+pred.skinblood <- age.raw
+```
+
+#Clock 4: Zhang et al blood clock
+```{r}
+#Load the data (Probe * IND, each column represents one individual. Data have already been normalized).
+data <- betas.zhang
+
+#Get the coefficients of each probe.
+coef <- zhang
+colnames(coef) <- c("probe", "coef")
+rownames(coef) <- coef$probe
+
+intercept <- coef[1,2]
+coef <- coef[-1,]
+rownames(coef) <- coef$probe
+
+#Do age prediction.
+pred <- coef$coef%*%data+intercept
+
+#Save the predicted result.
+age.raw <- age.file
+pred <- pred[,age.raw$ID]
+age.raw$pred<-as.double(pred)
+head(age.raw)
+
+#Save predicted ages.
+pred.zhang <- age.raw
+
+save(pred.hannum, pred.horvath, pred.skinblood, pred.zhang, file = "Output/Output_04b_predicted_ages.RData")
+```
+
+#Plot the data.
+```{r}
+# load("Output/Output_04a_clock_beta_values.RData")
+# age.file <- na.omit(data.frame(ID = colnames(betas), age = colData(betas)$sampling_age))
+# load("Output/Output_04b_predicted_ages.RData")
+
+pred.age <- data.frame(row.names = age.file$ID)
+pred.age$age <- age.file$age
+pred.age$hannum <- pred.hannum$pred
+pred.age$horvath <- pred.horvath$pred
+pred.age$skinblood <- pred.skinblood$pred
+pred.age$zhang <- pred.zhang$pred
+pred.age$person.ID <- rownames(pred.age)
+head(pred.age)
+
+pred.melt <- melt(pred.age, id.vars = c("person.ID", "age"))
+colnames(pred.melt) <- c("person.ID", "age", "clock", "pred.age")
+clock.names <- c("Hannum Bld", "Horvath MT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+levels(pred.melt$clock) <- clock.names
+head(pred.melt)
+
+#Calculate the Pearson correlation and mean absolute error (MAE) of each clock.
+correlations <- round(c(
+  cor(pred.melt[pred.melt$clock == clock.names[1], "pred.age"], pred.melt[pred.melt$clock == clock.names[1], "age"]),
+  cor(pred.melt[pred.melt$clock == clock.names[2], "pred.age"], pred.melt[pred.melt$clock == clock.names[2], "age"]),
+  cor(pred.melt[pred.melt$clock == clock.names[3], "pred.age"], pred.melt[pred.melt$clock == clock.names[3], "age"]),
+  cor(pred.melt[pred.melt$clock == clock.names[4], "pred.age"], pred.melt[pred.melt$clock == clock.names[4], "age"])
+  ), digits = 2)
+
+MAEs <- round(c(
+  mean(abs(pred.melt[pred.melt$clock == clock.names[1], "pred.age"] - pred.melt[pred.melt$clock == clock.names[1], "age"])),
+  mean(abs(pred.melt[pred.melt$clock == clock.names[2], "pred.age"] - pred.melt[pred.melt$clock == clock.names[2], "age"])),
+  mean(abs(pred.melt[pred.melt$clock == clock.names[3], "pred.age"] - pred.melt[pred.melt$clock == clock.names[3], "age"])),
+  mean(abs(pred.melt[pred.melt$clock == clock.names[4], "pred.age"] - pred.melt[pred.melt$clock == clock.names[4], "age"]))
+  ), digits = 1)
+
+#Combine the correlations and MAEs into a single dataframe, to be added to the plot.
+annots <- data.frame(
+  clock = factor(clock.names),
+  corr = paste0("r: ", correlations),
+  mae = paste0("MAE: ", MAEs)
+)
+annots
+
+#Plot the 4 clocks in a wrapped figure.
+ggplot(data=pred.melt, aes(x=age, y=pred.age)) +
+  theme_grey(base_size = 18) + 
+  theme(plot.title = element_blank(), axis.title = element_text(face="bold"), axis.text=element_text(face="bold"), strip.text.x = element_text(size = 18)) + 
+  geom_abline(intercept=0, slope=1, size = 1) +
+  geom_point(size = 0.5) + 
+  geom_text(data = annots, aes(x = -3, y = (max(pred.melt$pred.age)-2), label = corr), size = 6, hjust=0) +
+  geom_text(data = annots, aes(x = -3, y = (max(pred.melt$pred.age)-20), label = mae), size = 6, hjust=0) +
+  facet_wrap(~clock, scales = "fixed", nrow = 2, ncol = 2) +
+  ggtitle("Epigenetic clock age prediction") +
+  xlab("Chronological Age") + 
+  ylab("Predicted Age") + 
+  coord_cartesian(xlim = c(0, max(pred.melt$pred.age)), ylim = c(0, max(pred.melt$pred.age))) +
+  scale_x_continuous(breaks=c(0, 25, 50, 75, 100, 125)) + 
+  scale_y_continuous(breaks=c(0, 25, 50, 75, 100, 125))
+
+ggsave("Output/Plot_04a_predicted_ages.png", width = 6, height = 6, dpi = 300)
+```
+
+#Analyze the correlation between the 4 clocks' prediction errors; if a person is 'older' than expected according to one clock, is this also the case for the other clocks?
+```{r}
+#Calculate the prediction error of each clock for each person.
+pred.errors <- pred.age[,c(2:5)] - pred.age[,1]
+
+#Make a dataframe with the ages, person.IDs, and age prediction residuals of all 4 clocks per person.
+pred.errors$person.ID <- rownames(pred.errors)
+pred.errors$age <- pred.age$age
+head(pred.errors)
+
+pred.errors.melt <- melt(pred.errors, id.vars = c("person.ID", "age"))
+colnames(pred.errors.melt) <- c("person.ID", "age", "clock.1", "pred.1")
+levels(pred.errors.melt$clock.1) <- clock.names
+head(pred.errors.melt)
+
+#Make a copy of the molten dataframe for each clock, and to each dataframe, add 2 columns, one with the clock of reference, and one with the predicted ages of this clock.
+pred.errors.hannum <- pred.errors.melt
+pred.errors.hannum$clock.2 <- factor(clock.names[1], levels = clock.names)
+pred.errors.hannum$pred.2 <- rep(pred.errors.melt[pred.errors.melt$clock.1 == clock.names[1],"pred.1"], 4)
+head(pred.errors.hannum)
+
+pred.errors.horvath <- pred.errors.melt
+pred.errors.horvath$clock.2 <- factor(clock.names[2], levels = clock.names)
+pred.errors.horvath$pred.2 <- rep(pred.errors.melt[pred.errors.melt$clock.1 == clock.names[2],"pred.1"], 4)
+head(pred.errors.horvath)
+
+pred.errors.skinblood <- pred.errors.melt
+pred.errors.skinblood$clock.2 <- factor(clock.names[3], levels = clock.names)
+pred.errors.skinblood$pred.2 <- rep(pred.errors.melt[pred.errors.melt$clock.1 == clock.names[3],"pred.1"], 4)
+head(pred.errors.skinblood)
+
+pred.errors.zhang <- pred.errors.melt
+pred.errors.zhang$clock.2 <- factor(clock.names[4], levels = clock.names)
+pred.errors.zhang$pred.2 <- rep(pred.errors.melt[pred.errors.melt$clock.1 == clock.names[4],"pred.1"], 4)
+head(pred.errors.zhang)
+
+pred.errors.merge <- rbind(pred.errors.hannum, pred.errors.horvath, pred.errors.skinblood, pred.errors.zhang)
+head(pred.errors.merge)
+
+#Calculate the Pearson correlation and mean absolute error (MAE) of each clock with each other clock.
+correlations <- round(rbind(
+  c(
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[1], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[1], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[1], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[2], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[1], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[3], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[1], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[4], "pred.2"])
+  ),
+  c(
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[2], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[1], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[2], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[2], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[2], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[3], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[2], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[4], "pred.2"])
+  ),
+  c(
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[3], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[1], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[3], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[2], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[3], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[3], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[3], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[4], "pred.2"])
+  ),
+  c(
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[4], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[1], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[4], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[2], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[4], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[3], "pred.2"]),
+    cor(pred.errors.merge[pred.errors.merge$clock.1 == clock.names[4], "pred.1"], pred.errors.merge[pred.errors.merge$clock.2 == clock.names[4], "pred.2"])
+  )
+  ), digits = 2)
+correlations
+
+#Combine the correlations and MAEs into a single dataframe, to be added to the plot.
+annots <- data.frame(
+  clock.1 = factor(c(
+    rep(clock.names[1], 4),
+    rep(clock.names[2], 4),
+    rep(clock.names[3], 4),
+    rep(clock.names[4], 4)
+    )),
+  clock.2 = factor(rep(clock.names, 4)),
+  corr = paste0("r: ", correlations)
+)
+annots
+
+#Plot the predicted age errors of the 4 clocks against each other in a wrapped figure, to see whether the clocks agree with each other.
+ggplot(data=pred.errors.merge, aes(x=pred.2, y=pred.1)) +
+  theme_grey(base_size = 24) + 
+  theme(plot.title = element_text(), axis.title = element_text(face="bold"), axis.text=element_text(face="bold")) + 
+  geom_abline(intercept=0,slope=1) +
+  geom_point(size = 1.5) + 
+  geom_text(data = annots, aes(x = min(pred.errors.melt$pred.1), y = max(pred.errors.merge$pred.1)-4, label = corr), size = 8, hjust=0) +
+  facet_grid(clock.2~clock.1, scales = "fixed", switch = "y") +
+  ggtitle("Concordance of epigenetic clocks") +
+  xlab("Age Prediction Error (Clock 1)") + 
+  ylab("Age Prediction Error (Clock 2)") + 
+  coord_cartesian(xlim = c(min(pred.errors.melt$pred.1), max(pred.errors.melt$pred.1)), ylim = c(min(pred.errors.melt$pred.1), max(pred.errors.melt$pred.1))) +
+  scale_x_continuous(breaks=c(-20, 0, 20, 40, 60)) + 
+  scale_y_continuous(breaks=c(-20, 0, 20, 40, 60))
+
+ggsave("Output/Plot_04b_Age_prediction_error_correlation.png", width = 11.5, height = 12, dpi = 300)
+```
+
+#Analyze whether the outliers of one clock (predicted age error >10 years) are also outliers in the other clocks.
+```{r}
+#Calculate the prediction errors of each clock.
+outliers <- pred.age
+outliers$hannum.error <- outliers$hannum - outliers$age
+outliers$horvath.error <- outliers$horvath - outliers$age
+outliers$skinblood.error <- outliers$skinblood - outliers$age
+outliers$zhang.error <- outliers$zhang - outliers$age
+head(outliers)
+
+#Add 4 logical vectors to the pred.age object which pred.age whether each clock designates a person as an outlier (>10 years deviation of predicted age from actual age).
+outliers$hannum.outlier <- abs(outliers$hannum.error) >= 10
+outliers$horvath.outlier <- abs(outliers$horvath.error) >= 10
+outliers$skinblood.outlier <- abs(outliers$skinblood.error) >= 10
+outliers$zhang.outlier <- abs(outliers$zhang.error) >= 10
+head(outliers)
+
+outliers.melt <- melt(outliers, value.name = "pred.age", variable.name = "clock", 
+                      id.vars = c("person.ID", "age",
+                                  "hannum.error", "horvath.error", "skinblood.error", "zhang.error",
+                                  "hannum.outlier", "horvath.outlier", "skinblood.outlier", "zhang.outlier")
+                      )
+# outliers.melt$hannum.outlier <- factor(outliers.melt$hannum.outlier)
+clock.names <- c("Hannum Bld", "Horvath MT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+levels(outliers.melt$clock) <- clock.names
+head(outliers.melt)
+
+#Order the data in such a way that the logical vector indicating outliers according to one of the clocks is TRUE at the bottom; this makes ggplot plot these points at the front.
+outliers.melt <- outliers.melt[order(outliers.melt$hannum.outlier),]
+outliers.melt <- outliers.melt[order(outliers.melt$horvath.outlier),]
+outliers.melt <- outliers.melt[order(outliers.melt$skinblood.outlier),]
+outliers.melt <- outliers.melt[order(outliers.melt$zhang.outlier),]
+head(outliers.melt)
+
+#Calculate the correlations of the prediction errors of ONLY the samples deviating more than 10 years for each clock compared to the 3 other clocks.
+cor.outliers <- c(
+  paste0("r: ", round(cor(outliers$hannum.error[outliers$hannum.outlier], outliers$hannum.error[outliers$hannum.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$hannum.error[outliers$hannum.outlier], outliers$horvath.error[outliers$hannum.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$hannum.error[outliers$hannum.outlier], outliers$skinblood.error[outliers$hannum.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$hannum.error[outliers$hannum.outlier], outliers$zhang.error[outliers$hannum.outlier]), digits = 2)),
+  
+  paste0("r: ", round(cor(outliers$horvath.error[outliers$horvath.outlier], outliers$hannum.error[outliers$horvath.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$horvath.error[outliers$horvath.outlier], outliers$horvath.error[outliers$horvath.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$horvath.error[outliers$horvath.outlier], outliers$skinblood.error[outliers$horvath.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$horvath.error[outliers$horvath.outlier], outliers$zhang.error[outliers$horvath.outlier]), digits = 2)),
+  
+  paste0("r: ", round(cor(outliers$skinblood.error[outliers$skinblood.outlier], outliers$hannum.error[outliers$skinblood.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$skinblood.error[outliers$skinblood.outlier], outliers$horvath.error[outliers$skinblood.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$skinblood.error[outliers$skinblood.outlier], outliers$skinblood.error[outliers$skinblood.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$skinblood.error[outliers$skinblood.outlier], outliers$zhang.error[outliers$skinblood.outlier]), digits = 2)),
+  
+  paste0("r: ", round(cor(outliers$zhang.error[outliers$zhang.outlier], outliers$hannum.error[outliers$zhang.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$zhang.error[outliers$zhang.outlier], outliers$horvath.error[outliers$zhang.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$zhang.error[outliers$zhang.outlier], outliers$skinblood.error[outliers$zhang.outlier]), digits = 2)),
+  paste0("r: ", round(cor(outliers$zhang.error[outliers$zhang.outlier], outliers$zhang.error[outliers$zhang.outlier]), digits = 2))
+)
+
+#Calculate which percentage of each clock's outliers are reproduced by the 3 other clocks.
+ol.outliers <- c(
+    round(length(which(outliers$hannum.outlier[outliers$hannum.outlier]))/length(which(outliers$hannum.outlier)), digits = 2),
+    round(length(which(outliers$horvath.outlier[outliers$hannum.outlier]))/length(which(outliers$hannum.outlier)), digits = 2),
+    round(length(which(outliers$skinblood.outlier[outliers$hannum.outlier]))/length(which(outliers$hannum.outlier)), digits = 2),
+    round(length(which(outliers$zhang.outlier[outliers$hannum.outlier]))/length(which(outliers$hannum.outlier)), digits = 2),
+    
+    round(length(which(outliers$hannum.outlier[outliers$horvath.outlier]))/length(which(outliers$horvath.outlier)), digits = 2),
+    round(length(which(outliers$horvath.outlier[outliers$horvath.outlier]))/length(which(outliers$horvath.outlier)), digits = 2),
+    round(length(which(outliers$skinblood.outlier[outliers$horvath.outlier]))/length(which(outliers$horvath.outlier)), digits = 2),
+    round(length(which(outliers$zhang.outlier[outliers$horvath.outlier]))/length(which(outliers$horvath.outlier)), digits = 2),
+    
+    round(length(which(outliers$hannum.outlier[outliers$skinblood.outlier]))/length(which(outliers$skinblood.outlier)), digits = 2),
+    round(length(which(outliers$horvath.outlier[outliers$skinblood.outlier]))/length(which(outliers$skinblood.outlier)), digits = 2),
+    round(length(which(outliers$skinblood.outlier[outliers$skinblood.outlier]))/length(which(outliers$skinblood.outlier)), digits = 2),
+    round(length(which(outliers$zhang.outlier[outliers$skinblood.outlier]))/length(which(outliers$skinblood.outlier)), digits = 2),
+    
+    round(length(which(outliers$hannum.outlier[outliers$zhang.outlier]))/length(which(outliers$zhang.outlier)), digits = 2),
+    round(length(which(outliers$horvath.outlier[outliers$zhang.outlier]))/length(which(outliers$zhang.outlier)), digits = 2),
+    round(length(which(outliers$skinblood.outlier[outliers$zhang.outlier]))/length(which(outliers$zhang.outlier)), digits = 2),
+    round(length(which(outliers$zhang.outlier[outliers$zhang.outlier]))/length(which(outliers$zhang.outlier)), digits = 2)
+    )
+
+annots$cor.outliers <- cor.outliers
+annots$ol.outliers <- paste0("OL: ", ol.outliers*100, "%")
+annots
+
+#Plot the age predictions of the 4 clocks (predicted age vs. actual age), and color the outliers according to one of the clocks red. This allows you to check whether the other clocks also see this person as an outlier.
+#NB: The data is first sorted, so that the outliers are at the bottom; this makes ggplot plot them on top of all the other points.
+plot.theme <- list(
+  theme_grey(base_size = 32), 
+  theme(plot.title = element_blank(), axis.title = element_blank(), axis.text = element_text(face = "bold"), legend.position = "none", strip.text = element_text(colour = "black")), 
+  geom_abline(intercept=0,slope=1), 
+  # geom_abline(intercept=-10,slope=1, linetype = "dashed", alpha = 0.5), 
+  # geom_abline(intercept=10,slope=1, linetype = "dashed", alpha = 0.5),
+  geom_point(size = 2), 
+  scale_shape_manual(values = c(1, 16)),
+  facet_wrap(~clock, scales = "fixed", nrow = 1),
+  xlab("Chronological Age"), 
+  ylab("Predicted Age"), 
+  coord_cartesian(xlim = c(0, max(outliers.melt$pred.age)), ylim = c(0, max(outliers.melt$pred.age)))
+)
+
+outlier.colors <- c("#ff0000", "#0066ff", "#00cc00", "#cc33ff")
+
+#Change the column names of the annotation object to make ggplot understand the labels.
+colnames(annots)[2] <- "clock"
+
+#hannum
+outliers.melt <- outliers.melt[order(outliers.melt$hannum.outlier),]
+outliers.melt$clock <- factor(outliers.melt$clock, levels = clock.names[c(1,2,3,4)])
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = hannum.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[1]))
+ggsave("Output/Plot_04c.1_Outliers_hannum.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = hannum.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[1])) +
+  geom_text(data = annots[1:4,], aes(x = -3, y = max(outliers.melt$pred)-4, label = ol.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_hannum_overlaps.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = hannum.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[1])) +
+  geom_text(data = annots[1:4,], aes(x = -3, y = max(outliers.melt$pred)-4, label = cor.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_hannum_correlations.png", width = 14, height = 4, dpi = 300)
+  
+#horvath
+outliers.melt <- outliers.melt[order(outliers.melt$horvath.outlier),]
+outliers.melt$clock <- factor(outliers.melt$clock, levels = clock.names[c(2,1,3,4)])
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = horvath.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[2]))
+ggsave("Output/Plot_04c.2_Outliers_horvath.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = horvath.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[2])) +
+  geom_text(data = annots[c(6,5,7,8),], aes(x = -3, y = max(outliers.melt$pred)-4, label = ol.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_horvath_overlaps.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = horvath.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[2])) +
+  geom_text(data = annots[c(6,5,7,8),], aes(x = -3, y = max(outliers.melt$pred)-4, label = cor.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_horvath_correlations.png", width = 14, height = 4, dpi = 300)
+
+#skinblood
+outliers.melt <- outliers.melt[order(outliers.melt$skinblood.outlier),]
+outliers.melt$clock <- factor(outliers.melt$clock, levels = clock.names[c(3,1,2,4)])
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = skinblood.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[3]))
+ggsave("Output/Plot_04c.3_Outliers_skinblood.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = skinblood.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[3])) +
+  geom_text(data = annots[c(11,9,10,12),], aes(x = -3, y = max(outliers.melt$pred)-4, label = ol.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_skinblood_overlaps.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = skinblood.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[3])) +
+  geom_text(data = annots[c(11,9,10,12),], aes(x = -3, y = max(outliers.melt$pred)-4, label = cor.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_skinblood_correlations.png", width = 14, height = 4, dpi = 300)
+
+#zhang
+outliers.melt <- outliers.melt[order(outliers.melt$zhang.outlier),]
+outliers.melt$clock <- factor(outliers.melt$clock, levels = clock.names[c(4,1,2,3)])
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = zhang.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[4]))
+ggsave("Output/Plot_04c.4_Outliers_zhang.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = zhang.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[4])) +
+  geom_text(data = annots[c(16,13,14,15),], aes(x = -3, y = max(outliers.melt$pred)-4, label = ol.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_zhang_overlaps.png", width = 14, height = 4, dpi = 300)
+
+ggplot(data=outliers.melt, aes(x=age, y=pred.age, color = zhang.outlier)) + plot.theme + scale_color_manual(values = c("black", outlier.colors[4])) +
+  geom_text(data = annots[c(16,13,14,15),], aes(x = -3, y = max(outliers.melt$pred)-4, label = cor.outliers, color = NULL), size = 8, hjust=0)
+ggsave("test/Outliers_zhang_correlations.png", width = 14, height = 4, dpi = 300)
+```
+
+#Test whether the clock's prediction accuracies are dependent on chronological age.
+```{r}
+#Plot the people's actual ages against each clock's prediction error, to see whether the clocks become more or less accurate with age.
+ggplot(data=pred.errors.melt, aes(x=age, y=pred.1)) +
+  theme_grey(base_size = 24) + 
+  theme(plot.title = element_text(), axis.title = element_text(face="bold"), axis.text=element_text(face="bold")) + 
+  # geom_abline(intercept=0,slope=1) +
+  geom_point(size = 1) + 
+  geom_smooth(method = "lm") +
+  facet_wrap(~clock.1, scales = "fixed", nrow = 1, ncol = 4) +
+  ggtitle("Clock accuracy at different ages") +
+  xlab("Chronological age") + 
+  ylab("Prediction Error") + 
+  coord_cartesian(xlim = c(min(pred.errors.melt$age), max(pred.errors.melt$age)), ylim = c(min(pred.errors.melt$pred.1), max(pred.errors.melt$pred.1))) +
+  scale_x_continuous(breaks=c(0, 20, 40, 60, 80, 100)) + 
+  scale_y_continuous(breaks=c(-60, -40, -20, 0, 20, 40, 60))
+
+ggsave("Output/Plot_04d_Clock_errors_with_age.png", width = 11, height = 4, dpi = 300)
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

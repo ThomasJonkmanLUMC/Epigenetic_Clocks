@@ -1,0 +1,239 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+This script was written to test if aDMPs (hannum) are enriched for certain annotations. This is done by caluculating the odds ratios of them falling into certain annotations compared to a random set of reference CpGs (ref.hannum).
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(GenomicRanges)
+library(gplots)
+```
+
+#Prepare data.
+```{r}
+#Load 450K annotation, hannum CpGs, and reference set.
+load("Output/Output_01b_450K_annotation.RData")
+load("Output/Output_03b_clocks_full.RData")
+load("Output/Output_03c_refset_full.RData")
+
+idx <- colnames(values(all.clocks))[grep("H3K", colnames(values(all.clocks)))]
+for(i in idx){
+  values(all.clocks)[,i] <- factor(values(all.clocks)[,i])
+  values(refset)[,i] <- factor(values(refset)[,i])
+  values(non.clock)[,i] <- factor(values(non.clock)[,i])
+}
+
+#Add a vector indicating whether each CpG has a positive correlation with age.
+all.clocks$age.cor.above.0 <- all.clocks$Age.cor > 0
+
+hannum <- all.clocks[all.clocks$hannum]
+horvath <- all.clocks[all.clocks$horvath]
+skinblood <- all.clocks[all.clocks$skinblood]
+zhang <- all.clocks[all.clocks$zhang]
+```
+
+#Declare 3 functions: 
+- OddsRatios calculates odds ratios for a single feature.
+- CallOddsRatios calls OddsRatios for every feature.
+- PlotHeatmap plots these odds ratios in a heatmap.
+```{r}
+OddsRatios <- function(feature, set.of.interest, background.set, set.of.interest.name, background.set.name){
+  
+  #Create a matrix for storing the odds ratios and p-values.
+  colnms <- c(paste0(background.set.name, ", not in element", sep = ""), 
+              paste0(background.set.name, ", in element",  sep = ""), 
+              paste0(set.of.interest.name, ", not in element", sep = ""), 
+              paste0(set.of.interest.name, ", in element", sep = ""), 
+              paste0("Odds ", background.set.name, sep = ""), 
+              paste0("Odds ", set.of.interest.name, sep = ""), 
+              "Odds ratio", 
+              "p-value")
+  rwnms <- levels(values(set.of.interest[,feature])[,1])
+  dim.nms <- list(rwnms,colnms)
+  ORtab <<- matrix(nrow = length(rwnms), ncol = length(colnms), dimnames = dim.nms)
+  
+  #Calculate odds ratios and p-values.
+  
+  for(i in 1:length(levels(values(background.set[,feature])[,1]))){
+    
+    n00 <- length(background.set[values(background.set[,feature])[,1] != levels(values(background.set[,feature])[,1])[i]])
+    n01 <- length(background.set[values(background.set[,feature])[,1] == levels(values(background.set[,feature])[,1])[i]])
+    n10 <- length(set.of.interest[values(set.of.interest[,feature])[,1] != levels(values(set.of.interest[,feature])[,1])[i]])
+    n11 <- length(set.of.interest[values(set.of.interest[,feature])[,1] == levels(values(set.of.interest[,feature])[,1])[i]])
+    
+    Odds.background.set <- n01/n00 #Odds of background set being in a feature compared to not being in one.
+    Odds.set.of.interest <- n11/n10 #Odds of set of interest being in a feature compared to not being in one.
+    OR <- Odds.set.of.interest/Odds.background.set #Odds ratio of set of interest being in a feature, compared to background set.
+    
+    #Perform a Fisher's exact test to test for significance of the ORs. NB: some p-values will be so low that they will be returned as 0.
+    dat <- matrix(c(n00, n01, n10, n11), byrow=T, ncol=2)
+    colnames(dat) <- c("Not in element", "In element")
+    rownames(dat) <- c("reference CpG", "aVMC")
+    fit <- fisher.test(dat)
+    
+    #Save the values into ORtab.
+    ORtab[i,] <<- c(n00, n01, n10, n11, Odds.background.set, Odds.set.of.interest, OR, fit$p.value)
+  }
+  
+  # #Set odds ratio to 0 if the p-values are not significant (p-Bonferroni < 0.05).
+  # for(i in 1:nrow(ORtab)){
+  #   if(ORtab[i,8] > (0.05)) {ORtab[i,7] <<- 1}
+  # }
+  return(ORtab)
+}
+
+CallOddsRatios <- function(set.of.interest, background.set, set.of.interest.name, background.set.name) {
+  
+  #CGI features.
+  OddsRatios(feature = "CGI_Feature", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.CGI <<- ORtab
+  
+  #Chromatin state.
+  OddsRatios(feature = "Chromatin.state.abbr", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Chromatin <<- ORtab
+  
+  #Histone modifications.
+  OR.Hist.merge <<- data.frame(matrix(NA, nrow = 6, ncol = 8))
+  rownames(OR.Hist.merge) <<- c("H3K4me1", "H3K4me3", "H3K27ac", "H3K36me3", "H3K9me3", "H3K27me3")
+  colnames(OR.Hist.merge) <<- colnames(ORtab)
+  
+  #H3K4me1.
+  OddsRatios(feature = "H3K4me1", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[1,] <<- ORtab[2,]
+  
+  #H3K4me3.
+  OddsRatios(feature = "H3K4me3", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[2,] <<- ORtab[2,]
+  
+  #H3K27ac.
+  OddsRatios(feature = "H3K27ac", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[3,] <<- ORtab[2,]
+  
+  #H3K36me3.
+  OddsRatios(feature = "H3K36me3", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[4,] <<- ORtab[2,]
+  
+  #H3K9me3.
+  OddsRatios(feature = "H3K9me3", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[5,] <<- ORtab[2,]
+  
+  #H3K27me3.
+  OddsRatios(feature = "H3K27me3", set.of.interest, background.set, set.of.interest.name, background.set.name)
+  OR.Hist.merge[6,] <<- ORtab[2,]
+}
+
+PlotHeatmap <- function(file.path){
+  #hannum
+CallOddsRatios(set.of.interest = hannum, background.set = non.clock, set.of.interest.name = "hannum", background.set.name = "non.clock")
+OR.hannum <- as.data.frame(rbind(OR.CGI, OR.Hist.merge, OR.Chromatin))
+# OR.hannum$p.adj <- p.adjust(OR.hannum$`p-value`, method = "bonferroni")
+OR.hannum$p.adj <- OR.hannum$`p-value` * 9
+OR.hannum$p.adj[OR.hannum$p.adj > 1] <- 1
+OR.hannum$`Odds ratio`[OR.hannum$p.adj >= 0.05] <- 1
+# OR.hannum
+
+#horvath
+CallOddsRatios(set.of.interest = horvath, background.set = non.clock, set.of.interest.name = "horvath", background.set.name = "non.clock")
+OR.horvath <- as.data.frame(rbind(OR.CGI, OR.Hist.merge, OR.Chromatin))
+# OR.horvath$p.adj <- p.adjust(OR.horvath$`p-value`, method = "bonferroni")
+OR.horvath$p.adj <- OR.horvath$`p-value` * 9
+OR.horvath$p.adj[OR.horvath$p.adj > 1] <- 1
+OR.horvath$`Odds ratio`[OR.horvath$p.adj >= 0.05] <- 1
+# OR.horvath
+
+#skinblood
+CallOddsRatios(set.of.interest = skinblood, background.set = non.clock, set.of.interest.name = "skinblood", background.set.name = "non.clock")
+OR.skinblood <- as.data.frame(rbind(OR.CGI, OR.Hist.merge, OR.Chromatin))
+# OR.skinblood$p.adj <- p.adjust(OR.skinblood$`p-value`, method = "bonferroni")
+OR.skinblood$p.adj <- OR.skinblood$`p-value` * 9
+OR.skinblood$p.adj[OR.skinblood$p.adj > 1] <- 1
+OR.skinblood$`Odds ratio`[OR.skinblood$p.adj >= 0.05] <- 1
+# OR.skinblood
+
+#zhang
+CallOddsRatios(set.of.interest = zhang, background.set = non.clock, set.of.interest.name = "zhang", background.set.name = "non.clock")
+OR.zhang <- as.data.frame(rbind(OR.CGI, OR.Hist.merge, OR.Chromatin))
+# OR.zhang$p.adj <- p.adjust(OR.zhang$`p-value`, method = "bonferroni")
+OR.zhang$p.adj <- OR.zhang$`p-value` * 9
+OR.zhang$p.adj[OR.zhang$p.adj > 1] <- 1
+OR.zhang$`Odds ratio`[OR.zhang$p.adj >= 0.05] <- 1
+# OR.zhang
+
+#Merge the odds ratio tables into one table, and transform the results onto a log2-scale for visualization.
+OR.merge <- cbind(OR.hannum$`Odds ratio`, OR.horvath$`Odds ratio`, OR.skinblood$`Odds ratio`, OR.zhang$`Odds ratio`)
+rownames(OR.merge) <- rownames(OR.hannum)
+clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+colnames(OR.merge) <- clock.names
+OR.merge <- log2(OR.merge)
+OR.merge
+
+#Add two empty rows (called spacer1 and spacer2) to the data for layout purposes.
+spacer1 <- data.frame(NA,NA,NA,NA , row.names = "")
+colnames(spacer1) <- clock.names
+spacer2 <-  data.frame(NA,NA,NA,NA , row.names = " ")
+colnames(spacer2) <- clock.names
+plot.data <- rbind(OR.merge[1:3,], spacer1, OR.merge[4:9,], spacer2, OR.merge[10:24,])
+plot.data <- as.matrix(plot.data)
+plot.data
+
+#Remove the number codes in the chromatin states.
+split.names <- strsplit(rownames(plot.data)[12:26], "_")
+split.names <- as.character(lapply(split.names, function(x){x[2]}))
+rownames(plot.data)[12:26] <- split.names
+plot.data
+
+my.palette <- colorRampPalette(c("#0000cc", "#2222ff", "#eeeeee", "#ff2222", "#cc0000"))(n = 11)
+my.breaks <- seq(-3, 3, length = 12)
+
+#Plot the odds ratios in a heatmap.
+png(file = file.path, width = 2, height = 6, unit = "in", res = 300)
+heatmap.2(plot.data, Colv = F, Rowv = F, dendrogram = "none", trace = "none", col = my.palette, breaks = my.breaks, density.info = "none", key = F, keysize = 0.1, margins = c(7.5, 5.5), cexRow = 1, cexCol = 1, na.color=par("bg"))
+dev.off()
+}
+```
+
+#Calculate genomic enrichments for all clocks, and plot them in a heatmap.
+```{r}
+PlotHeatmap(file.path = "Output/Plot_06a_genomic_enrichment_heatmap_all.png")
+```
+
+#Repeat the odds ratio calculation, but now for CpGs which correlate either positively or negatively with age.
+```{r}
+#Positively-correlated CpGs.
+hannum <- all.clocks[(all.clocks$hannum & all.clocks$age.cor.above.0)]
+horvath <- all.clocks[(all.clocks$horvath & all.clocks$age.cor.above.0)]
+skinblood <- all.clocks[(all.clocks$skinblood & all.clocks$age.cor.above.0)]
+zhang <- all.clocks[(all.clocks$zhang & all.clocks$age.cor.above.0)]
+
+PlotHeatmap(file.path = "Output/Plot_06b_genomic_enrichment_heatmap_positive.png")
+
+#Negatively-correlated CpGs.
+hannum <- all.clocks[(all.clocks$hannum & !all.clocks$age.cor.above.0)]
+horvath <- all.clocks[(all.clocks$horvath & !all.clocks$age.cor.above.0)]
+skinblood <- all.clocks[(all.clocks$skinblood & !all.clocks$age.cor.above.0)]
+zhang <- all.clocks[(all.clocks$zhang & !all.clocks$age.cor.above.0)]
+
+PlotHeatmap(file.path = "Output/Plot_06c_genomic_enrichment_heatmap_negative.png")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

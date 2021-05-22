@@ -1,0 +1,960 @@
+---
+title: "TWAS Analysis"
+output: 
+  html_document:
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+This script was written to analyze the results of the TWAS of CpGs from 4 epigenetic clocks (hannum, horvath, skinblood, zhang) and the reference set (refset).
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(SummarizedExperiment)
+# library(gplots)
+# library(RColorBrewer)
+# library(GenomicRanges)
+# library(ggplot2)
+# library(clusterProfiler)
+# library(org.Hs.eg.db)
+# library(xlsx)
+
+#Load a custom-made function, called heatmap.3, which expands on the heatmap.2 function of the gplots package, allowing multiple sidebars in one heatmap.
+#source_url("https://raw.githubusercontent.com/obigriffith/biostar-tutorials/master/Heatmaps/heatmap.3.R")
+load("Input/Input_05a_heatmap_function.RData")
+```
+
+#Prepare data.
+```{r}
+#Load TWAS data.
+load("Output/Output_03a_twas_data.RData")
+
+#Load the bacon-adjusted TWAS output (two matrices, one with t-statistics of all gene-cpg associations, and one with p-values) of clocks and refset.
+load("Output/Output_08a.1_bacon_t_clocks.RData")
+load("Output/Output_08a.2_bacon_p_clocks.RData")
+# load("Output/Output_08b.1_bacon_t_refset.RData")
+# load("Output/Output_08b.2_bacon_p_refset.RData")
+
+#Load the genomic ranges for the genes and the annotation for all 450K CpGs from the array.
+load("Output/Output_01a_ensembl_genes.RData")
+load("Output/Output_01b_450K_annotation.RData")
+
+#Load clocks and refset.
+load("Output/Output_03b_clocks_full.RData")
+load("Output/Output_03c_refset_full.RData")
+
+#Change the name of the 'all.clocks' object to make the code easier to edit.
+clocks <- all.clocks
+rm(all.clocks)
+
+#Harmonize seqnames.
+seqlevelsStyle(GeneEns) <- seqlevelsStyle(clocks)
+genome(GeneEns) <- genome(clocks)
+
+#In the TWAS, genes with extremely low expression were filtered out. Remove the same genes from GeneEns.
+idx <- match(rownames(p.clocks), names(GeneEns))
+GeneEns <- GeneEns[idx]
+
+#Remove X and Y chromosomes from the genes.
+GeneEns <- dropSeqlevels(GeneEns, c("chrX", "chrY"), pruning.mode = "coarse")
+```
+
+#Define functions to analyze the TWAS:
+- Function 1 splits the gene-cpg associations into cis (defined as genes <= 100 kB away from the cpg, on the same chromosome) and trans (defined as >5 MB away from the cpg, or on a different chromosome).
+- Function 2 analyzes the associations in cis.
+- Function 3 analyzes the associations in trans.
+```{r}
+split.cis.trans <- function(CpG.set, t.stat, p.val){
+  
+  #Make an empty dataframe for storing the gene-cpg distances.
+  distance.matrix <- matrix(NaN, nrow = nrow(p.val), ncol = ncol(p.val), dimnames = list(rownames(p.val), colnames(p.val)))
+  
+  #Make a sorted version of the CpGs of interest in the order of the p-value output from bacon.
+  sorted.CpGs <- CpG.set[colnames(p.val)]
+  
+  #Store the distance between a gene-cpg pair if they're on the same chromosome, and fill in NA if they're on different chromosomes.
+  for(i in 1:ncol(p.val)){
+    cpg <- sorted.CpGs[i]
+    calc.distance <- distance(cpg, GeneEns, ignore.strand = T)
+    distance.matrix[,i] <- calc.distance
+  }
+  
+  #Create an empty dataframe for storing whether an association in in cis or in trans, and also empty dataframes for storing the associations in cis and the associations in trans.
+  template <- matrix(NaN, nrow = nrow(p.val), ncol = ncol(p.val), dimnames = list(rownames(p.val), colnames(p.val)))
+  
+  cis.check <- template
+  trans.check <- template
+  
+  t.cis <- template
+  p.cis <- template
+  t.trans <- template
+  p.trans <- template
+  
+  #For each gene-cpg set, create a logical vector that checks whether the two are in cis (<=100 kB away from each other and on the same chromosome)
+  #Note: if the gene and cpg are on different chromosomes, the value in distance.matrix will be NA.
+  for(i in 1:ncol(cis.check)){
+    cis.check[,i] <- distance.matrix[,i] <= 1e5 & !is.na(distance.matrix[,i])
+  }
+  
+  #Currently, cis.check is either 1 or 0 (TRUE or FALSE respectively), and these values are used to select cis and trans associations, setting everything that is NOT selected to 0. However, this gives problems, because there are some actual p-values of 0 in the data, which represent top hits. Set the FALSE data to NA instead, so that the non-applicable associations become NA instead of 0.
+  cis.check[cis.check == 0] <- NA
+  
+  #Do the same for trans-associations (>5 MB away from each other or on different chromosomes).
+  for(i in 1:ncol(trans.check)){
+    trans.check[,i] <- distance.matrix[,i] > 5e6 | is.na(distance.matrix[,i])
+  }
+  trans.check[trans.check == 0] <- NA
+  
+  #Split the output into associations in cis and in trans (in matrix form, because p.adjust doesn't work with data.frames).
+  t.cis <- t.stat * cis.check
+  t.trans <- t.stat * trans.check
+  
+  p.cis <- p.val * cis.check
+  p.trans <- p.val * trans.check
+  
+  #Adjust the p-values for multiple testing, using the Bonferroni method. NB: associations in cis and in trans were corrected separately.
+  padj.cis <- matrix(
+    p.adjust(p.cis, method = "bonferroni"), 
+    nrow = nrow(p.cis), ncol = ncol(p.cis), dimnames = list(rownames(p.cis), colnames(p.cis)))
+
+  padj.trans <- matrix(
+    p.adjust(p.trans, method = "bonferroni"), 
+    nrow = nrow(p.trans), ncol = ncol(p.trans), dimnames = list(rownames(p.trans), colnames(p.trans)))
+
+  #Write the t-statistics of the associations in cis and in trans to the global environment.
+  t.cis <<- t.cis
+  t.trans <<- t.trans
+  
+  #Bind the adjusted p-values into a single list.
+  padj <- list(
+    cis = padj.cis, 
+    trans = padj.trans
+    )
+  
+  return(padj)
+}
+
+Analysis.cis <- function(CpG.set.name, padj){
+  
+  #Calculate the number of associations for each gene and cpg.
+  gene.assoc <- matrix(NaN, nrow = nrow(padj), ncol = 1, dimnames = list(rownames(padj), "Number of associations"))
+  gene.assoc[,1] <- apply(padj, 1, function(x){length(which(x <= 0.05))})
+  
+  cpg.assoc <- matrix(NaN, nrow = ncol(padj), ncol = 1, dimnames = list(colnames(padj), "Number of associations"))
+  cpg.assoc[,1] <- apply(padj, 2, function(x){length(which(x <= 0.05))})
+  
+  #Order the hits by number of associations to find the genes/cpgs with the most associations.
+  gene.assoc <- as.data.frame(gene.assoc)
+  gene.assoc$Ensembl.ID <- rownames(gene.assoc)
+  gene.assoc$`Associating CpGs` <- apply(padj, 1, function(x){gsub(" ", ",", paste(names(which(x <= 0.05)), collapse = " "))})
+  gene.assoc <- gene.assoc[order(gene.assoc$`Number of associations`, decreasing = T),]
+  gene.assoc$Group <- CpG.set.name
+  
+  cpg.assoc <- as.data.frame(cpg.assoc)
+  cpg.assoc$CpG <- rownames(cpg.assoc)
+  cpg.assoc$`Associating genes` <- apply(padj, 2, function(x){gsub(" ", ",", paste(names(which(x <= 0.05)), collapse = " "))})
+  cpg.assoc <- cpg.assoc[order(cpg.assoc$`Number of associations`, decreasing = T),]
+  cpg.assoc$Group <- CpG.set.name
+  
+    #Prepare a dataframe containing the cumulative percentages of the gene-set which has a certain number of associations (ordered from highest to lowest (all CpGs with at least 1 association set as 100%)).
+  gene.perc <- numeric(length = max(gene.assoc$`Number of associations`+1))
+  for(i in 1:(max(gene.assoc$`Number of associations`)+1)) {
+    gene.perc[i] <- length(which(gene.assoc$`Number of associations` == i-1))
+  }
+  gene.perc <- as.data.frame(cumsum(rev(gene.perc)) / nrow(padj) * 100)
+  colnames(gene.perc) <- "Cumulative_Percentage"
+  gene.perc$Associations <- max(gene.assoc$`Number of associations`):0
+  gene.perc$Group <- CpG.set.name
+  
+  #Prepare a dataframe containing the cumulative percentages of the CpG-set which has a certain number of associations (ordered from highest to lowest (all CpGs with at least 1 association set as 100%)).
+  cpg.perc <- numeric(length = max(cpg.assoc$`Number of associations`+1))
+  for(i in 1:(max(cpg.assoc$`Number of associations`)+1)) {
+    cpg.perc[i] <- length(which(cpg.assoc$`Number of associations` == i-1))
+  }
+  cpg.perc <- as.data.frame(cumsum(rev(cpg.perc)) / ncol(padj) * 100)
+  colnames(cpg.perc) <- "Cumulative_Percentage"
+  cpg.perc$Associations <- max(cpg.assoc$`Number of associations`):0
+  cpg.perc$Group <- CpG.set.name
+  
+  #Bind the results into a single list.
+  res <- list(
+    gene.assoc = gene.assoc,
+    cpg.assoc = cpg.assoc,
+    gene.perc = gene.perc,
+    cpg.perc = cpg.perc
+    )
+  
+  return(res)
+}
+
+Analysis.trans <- function(CpG.set, CpG.set.name, padj){
+  
+  #Save the number of associations for each gene and cpg.
+  gene.assoc <- matrix(NaN, nrow = nrow(padj), ncol = 1, dimnames = list(rownames(padj), "Number of associations"))
+  gene.assoc[,1] <- apply(padj, 1, function(x){length(which(x <= 0.05))})
+  
+  cpg.assoc <- matrix(NaN, nrow = ncol(padj), ncol = 1, dimnames = list(colnames(padj), "Number of associations"))
+  cpg.assoc[,1] <- apply(padj, 2, function(x){length(which(x <= 0.05))})
+  
+  #Order the hits by number of associations to find the genes/cpgs with the most associations.
+  gene.assoc <- as.data.frame(gene.assoc)
+  gene.assoc$Ensembl.ID <- rownames(gene.assoc)
+  gene.assoc$`Associating CpGs` <- apply(padj, 1, function(x){gsub(" ", ",", paste(names(which(x <= 0.05)), collapse = " "))})
+  gene.assoc <- gene.assoc[order(gene.assoc$`Number of associations`, decreasing = T),]
+  gene.assoc$Group <- CpG.set.name
+  
+  cpg.assoc <- as.data.frame(cpg.assoc)
+  cpg.assoc$CpG <- rownames(cpg.assoc)
+  cpg.assoc$`Associating genes` <- apply(padj, 2, function(x){gsub(" ", ",", paste(names(which(x <= 0.05)), collapse = " "))})
+  cpg.assoc <- cpg.assoc[order(cpg.assoc$`Number of associations`, decreasing = T),]
+  cpg.assoc$Group <- CpG.set.name
+  
+    #Prepare a dataframe containing the cumulative percentages of the gene-set which has a certain number of associations (ordered from highest to lowest (all CpGs with at least 1 association set as 100%)).
+  gene.perc <- numeric(length = max(gene.assoc$`Number of associations`+1))
+  for(i in 1:(max(gene.assoc$`Number of associations`)+1)) {
+    gene.perc[i] <- length(which(gene.assoc$`Number of associations` == i-1))
+  }
+  gene.perc <- as.data.frame(cumsum(rev(gene.perc)) / nrow(padj) * 100)
+  colnames(gene.perc) <- "Cumulative_Percentage"
+  gene.perc$Associations <- max(gene.assoc$`Number of associations`):0
+  gene.perc$Group <- CpG.set.name
+  
+  #Prepare a dataframe containing the cumulative percentages of the CpG-set which has a certain number of associations (ordered from highest to lowest (all CpGs with at least 1 association set as 100%)).
+  cpg.perc <- numeric(length = max(cpg.assoc$`Number of associations`+1))
+  for(i in 1:(max(cpg.assoc$`Number of associations`)+1)) {
+    cpg.perc[i] <- length(which(cpg.assoc$`Number of associations` == i-1))
+  }
+  cpg.perc <- as.data.frame(cumsum(rev(cpg.perc)) / ncol(padj) * 100)
+  colnames(cpg.perc) <- "Cumulative_Percentage"
+  cpg.perc$Associations <- max(cpg.assoc$`Number of associations`):0
+  cpg.perc$Group <- CpG.set.name
+  
+  #Bind the results into a single list.
+  res <- list(
+    gene.assoc = gene.assoc,
+    cpg.assoc = cpg.assoc,
+    gene.perc = gene.perc,
+    cpg.perc = cpg.perc
+    )
+  
+  return(res)
+  }
+```
+
+#Analysis for all 4 clocks together, then split the output into the 4 clocks.
+```{r}
+padj.clocks <- split.cis.trans(
+  CpG.set = clocks, 
+  t.stat = t.clocks, 
+  p.val = p.clocks
+  )
+
+cis.clocks <- Analysis.cis(
+  CpG.set.name = "clocks", 
+  padj = padj.clocks$cis
+  )
+
+trans.clocks <- Analysis.trans(
+  CpG.set = clocks, 
+  CpG.set.name = "clocks", 
+  padj = padj.clocks$trans
+  )
+
+#hannum
+hannum <- clocks[clocks$hannum]
+padj.cis.hannum <- padj.clocks$cis[,names(hannum)]
+padj.trans.hannum <- padj.clocks$trans[,names(hannum)]
+
+cis.hannum <- Analysis.cis(CpG.set.name = "hannum", padj = padj.cis.hannum)
+trans.hannum <- Analysis.trans(CpG.set = hannum, CpG.set.name = "hannum", padj = padj.trans.hannum)
+
+#horvath
+horvath <- clocks[clocks$horvath]
+padj.cis.horvath <- padj.clocks$cis[,names(horvath)]
+padj.trans.horvath <- padj.clocks$trans[,names(horvath)]
+
+cis.horvath <- Analysis.cis(CpG.set.name = "horvath", padj = padj.cis.horvath)
+trans.horvath <- Analysis.trans(CpG.set = horvath, CpG.set.name = "horvath", padj = padj.trans.horvath)
+
+#skinblood
+skinblood <- clocks[clocks$skinblood]
+padj.cis.skinblood <- padj.clocks$cis[,names(skinblood)]
+padj.trans.skinblood <- padj.clocks$trans[,names(skinblood)]
+
+cis.skinblood <- Analysis.cis(CpG.set.name = "skinblood", padj = padj.cis.skinblood)
+trans.skinblood <- Analysis.trans(CpG.set = skinblood, CpG.set.name = "skinblood", padj = padj.trans.skinblood)
+
+#zhang
+zhang <- clocks[clocks$zhang]
+padj.cis.zhang <- padj.clocks$cis[,names(zhang)]
+padj.trans.zhang <- padj.clocks$trans[,names(zhang)]
+
+cis.zhang <- Analysis.cis(CpG.set.name = "zhang", padj = padj.cis.zhang)
+trans.zhang <- Analysis.trans(CpG.set = zhang, CpG.set.name = "zhang", padj = padj.trans.zhang)
+```
+
+#Prepare the associations between the CpGs and the trans-genes for plotting in a series of heatmaps.
+The following genes/CpGs will be included:
+- Genes which associate with at least 5% of the CpGs of at least one clock in trans.
+- CpGs which associate with at least 10 genes in trans.
+```{r}
+#Create a matrix of the unique cis-genes and cpgs.
+sig.genes <- unique(c(
+  rownames(cis.hannum$gene.assoc)[cis.hannum$gene.assoc$`Number of associations` >= (1)],
+  rownames(cis.horvath$gene.assoc)[cis.horvath$gene.assoc$`Number of associations` >= (1)],
+  rownames(cis.skinblood$gene.assoc)[cis.skinblood$gene.assoc$`Number of associations` >= (1)],
+  rownames(cis.zhang$gene.assoc)[cis.zhang$gene.assoc$`Number of associations` >= (1)]
+))
+sig.cpgs <- cis.clocks$cpg.assoc[cis.clocks$cpg.assoc$`Number of associations` >= 1, "CpG"]
+sig.cis <- t.cis[sig.genes,sig.cpgs]
+dim(sig.cis)
+
+#Create a matrix of the unique genes and cpgs which associate with 5% of any clock or with 10 genes, respectively.
+sig.genes <- unique(c(
+  rownames(trans.hannum$gene.assoc)[trans.hannum$gene.assoc$`Number of associations` >= (length(hannum)/20)],
+  rownames(trans.horvath$gene.assoc)[trans.horvath$gene.assoc$`Number of associations` >= (length(horvath)/20)],
+  rownames(trans.skinblood$gene.assoc)[trans.skinblood$gene.assoc$`Number of associations` >= (length(skinblood)/20)],
+  rownames(trans.zhang$gene.assoc)[trans.zhang$gene.assoc$`Number of associations` >= (length(zhang)/20)]
+))
+sig.cpgs <- trans.clocks$cpg.assoc[trans.clocks$cpg.assoc$`Number of associations` >= 10, "CpG"]
+sig.associations <- t.trans[sig.genes,sig.cpgs]
+dim(sig.associations)
+
+#Create a matrix of all unique genes and cpgs which associate with 1 gene/cpg.
+all.genes <- unique(c(
+  rownames(trans.hannum$gene.assoc)[trans.hannum$gene.assoc$`Number of associations` >= 1],
+  rownames(trans.horvath$gene.assoc)[trans.horvath$gene.assoc$`Number of associations` >= 1],
+  rownames(trans.skinblood$gene.assoc)[trans.skinblood$gene.assoc$`Number of associations` >= 1],
+  rownames(trans.zhang$gene.assoc)[trans.zhang$gene.assoc$`Number of associations` >= 1]
+))
+all.cpgs <- trans.clocks$cpg.assoc[trans.clocks$cpg.assoc$`Number of associations` >= 1, "CpG"]
+all.associations <- t.trans[all.genes,all.cpgs]
+dim(all.associations)
+
+#Save the association matrices (will be loaded in script 10).
+save(sig.associations, file = "Output/Output_09a_significant_associations_in_trans.RData")
+save(all.associations, file = "Output/Output_09a.2_all_associations_in_trans.RData")
+save(sig.cis, file = "Output/Output_09a.3_all_associations_in_cis.RData")
+
+#Define vectors of gene/CpG chromosomes.
+hm.genes <- GeneEns[rownames(sig.associations)]
+hm.cpgs <- clocks[colnames(sig.associations)]
+
+#Prepare the clustering.
+x <- hclust(dist(sig.associations), method = "complete")
+y <- hclust(dist(t(sig.associations)), method = "complete")
+
+# #Use this code instead if the clustering is giving errors.
+# dists <- dist((sig.associations))
+# dists <- as.dist(dists)
+# dists[is.na(dists)] <- 0
+# dists[is.nan(dists)] <- 0
+# sum(is.infinite(dists))  # THIS SHOULD BE 0
+# x <- hclust(dists)
+# 
+# dists <- dist(t(sig.associations))
+# dists <- as.dist(dists)
+# dists[is.na(dists)] <- 0
+# dists[is.nan(dists)] <- 0
+# sum(is.infinite(dists))  # THIS SHOULD BE 0
+# y <- hclust(dists)
+
+#Define color palette and breaks of the heatmap.
+my.palette <- colorRampPalette(c("#0000cc", "#0000ff", "#ffffff", "#ff0000", "#cc0000"))(n = 400)
+my.breaks <- seq(-12, 12, length=401)
+```
+
+#Heatmap 1: 4 sidebars which mark whether the CpGs belong to the 4 clocks (black = yes, white = no).
+```{r}
+#Define 4 sidebars which mark whether the CpGs belong to the 4 clocks (black = yes, white = no).
+top.palette <- colorRampPalette(c("#ffffff", "#000000")) (n = 2)
+col.hannum <- top.palette[as.factor(hm.cpgs$hannum)]
+col.horvath <- top.palette[as.factor(hm.cpgs$horvath)]
+col.skinblood <- top.palette[as.factor(hm.cpgs$skinblood)]
+col.zhang <- top.palette[as.factor(hm.cpgs$zhang)]
+
+#Add the vectors containing the color sequences for the three sidebars into one matrix (required input format for the heatmap.3 function).
+col.mat <- cbind(col.hannum, col.horvath, col.skinblood, col.zhang)
+clock.names <- c("Hannum Bld", "Horvath MT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+colnames(col.mat) <- clock.names
+
+#Draw heatmap. The CpGs (columns) have the following sidebars:
+#Sidebar 1 is a continuous magenta-white-green scale based on the mean methylation level of the CpG in young people (<=30 years). M-values below 0 (unmethylated) are magenta, while M-values above 0 (methylated) are green. M-values of 0 (half-methylated) are white.
+#Sidebar 2 is a discrete yellow-grey-purple scale based on whether the CpG is located on a CGI (yellow), shore (grey), or neither (purple).
+#Sidebar 3 is a discrete black-white scale based on whether CpG is on a H3K27me3 mark (black) or not (white).
+png(file = "Output/Plot_09a.1_Top.trans_heatmap_clocks.png", width = 8, height = 9, unit = "in", res = 600)
+heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, ColSideColors = col.mat, ColSideColorsSize=4.0, symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
+dev.off()
+```
+
+#Heatmap 2: three sidebars with genomic annotations for the CpGs.
+```{r}
+#Sidebar 1: magenta-white-green based on mean DNA methylation (M-value negative, zero, or positive, respectively) of the CpG in people <=30 years.
+hm.cpg.mean <- cut(hm.cpgs$Mean.Mvalue.below.30, breaks = c(-7, -5, -3, -1, 1, 3, 5, 7), labels = c(-7, -5, -3, -1, 1, 3, 5)) 
+top.palette <- colorRampPalette(c("#770077", "#cc00cc", "#ff00ff", "#ffffff", "#00ff00", "#00aa00", "#007700")) (n = 7)
+col.mean <- top.palette[hm.cpg.mean]
+
+#Sidebar 2: blue-white-red based on correlation of a CpG's methylation with age (correlation negative, 0, or positive, respectively).
+hm.cpg.cor <- cut(hm.cpgs$Age.cor, breaks = c(-1, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1), labels = c(-1, -0.75, -0.5, -0.25, 0.25, 0.5, 0.75))
+top.palette <- colorRampPalette(c("#000077", "#0000aa", "#0000ff", "#ffffff", "#ff0000", "#aa0000", "#770000")) (n = 7)
+col.cor <- top.palette[hm.cpg.cor]
+
+#Sidebar 3: yellow-grey-purple scale based on whether CpGs are CGI/shore/non-CGI (respectively).
+hm.cpg.CGI <- hm.cpgs$CGI_Feature
+top.palette <- colorRampPalette(c("#ffff00", "#aaaaaa", "#aa00ff")) (n = 3)
+col.CGI <- top.palette[hm.cpg.CGI]
+
+#Sidebar 4: white-black scale designating the presence of the H3K27me3 mark (black: mark present, white: mark absent).
+hm.cpg.H3K27me3 <- as.factor(hm.cpgs$H3K27me3)
+top.palette <- colorRampPalette(c("#ffffff", "#000000")) (n = 2)
+col.H3K27me3 <- top.palette[hm.cpg.H3K27me3]
+
+#Add the vectors containing the color sequences for the three sidebars into one matrix (required input format for the heatmap.3 function).
+col.mat <- cbind(col.mean, col.cor, col.CGI, col.H3K27me3)
+colnames(col.mat) <- c("Young methylation", "Age correlation", "CGI feature", "H3K27me3")
+
+#Draw heatmap. The CpGs (columns) have the following sidebars:
+#Sidebar 1 is a continuous magenta-white-green scale based on the mean methylation level of the CpG in young people (<=30 years). M-values below 0 (unmethylated) are magenta, while M-values above 0 (methylated) are green. M-values of 0 (half-methylated) are white.
+#Sidebar 2 is a discrete yellow-grey-purple scale based on whether the CpG is located on a CGI (yellow), shore (grey), or neither (purple).
+#Sidebar 3 is a discrete black-white scale based on whether CpG is on a H3K27me3 mark (black) or not (white).
+png(file = "Output/Plot_09a.2_Top.trans_heatmap_genomic_regions.png", width = 8, height = 9, unit = "in", res = 600)
+heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, ColSideColors = col.mat, ColSideColorsSize=4.0, symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
+dev.off()
+```
+
+#Heatmap 3: age correlation of trans-genes according to Peters et al. (https://www.nature.com/articles/ncomms9570) (yellow = positive, purple = negative).
+```{r}
+#Define a sidebar which marks whether the genes significantly correlate with age, and if so, in which direction.
+load("test/trans.annot.RData")
+trans.annot
+
+hm.gene.cor <- trans.annot$age.cor.peters
+hm.gene.cor[!trans.annot$peters.sig] <- NA
+top.palette <- colorRampPalette(c("#aa00ff", "#ffff00")) (n = 2)
+row.cor <- top.palette[hm.gene.cor]
+
+#Add the vectors containing the color sequences for the three sidebars into one matrix (required input format for the heatmap.3 function).
+row.mat <- rbind(row.cor)
+rownames(row.mat) <- "Age correlation"
+
+#Draw heatmap. The CpGs (columns) have the following sidebars:
+#Sidebar 1 is a continuous magenta-white-green scale based on the mean methylation level of the CpG in young people (<=30 years). M-values below 0 (unmethylated) are magenta, while M-values above 0 (methylated) are green. M-values of 0 (half-methylated) are white.
+#Sidebar 2 is a discrete yellow-grey-purple scale based on whether the CpG is located on a CGI (yellow), shore (grey), or neither (purple).
+#Sidebar 3 is a discrete black-white scale based on whether CpG is on a H3K27me3 mark (black) or not (white).
+png(file = "Output/Plot_09a.3_Top.trans_heatmap_gene.age.cor.png", width = 8.25, height = 8, unit = "in", res = 600)
+heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), 
+          trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, 
+          RowSideColors = row.mat, RowSideColorsSize=1.0, 
+          symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
+dev.off()
+```
+
+#Investigate the internal and external correlations of the two gene and cpg clusters.
+```{r}
+cl.cpgs <- cutree(hclust(dist(t(sig.associations))), k = 2)
+cl.genes <- cutree(hclust(dist(sig.associations)), k = 2)
+
+cor.cpgs <- ((as.matrix(cor(na.omit((sig.associations[, ]))))))
+cor.genes <- ((as.matrix(cor(na.omit(t(sig.associations[, ]))))))
+
+#Internal correlations of cluster 2 (naive cluster).
+summary(as.numeric(cor.cpgs[cl.cpgs==2, cl.cpgs==2]))
+summary(as.numeric(cor.genes[cl.genes==2, cl.genes==2]))
+
+#Internal correlations of cluster 1 (activated cluster).
+summary(as.numeric(cor.cpgs[cl.cpgs==1, cl.cpgs==1]))
+summary(as.numeric(cor.genes[cl.genes==1, cl.genes==1]))
+
+#Correlation of the two clusters with each other.
+summary(as.numeric(cor.cpgs[cl.cpgs==1, cl.cpgs==2]))
+summary(as.numeric(cor.genes[cl.genes==1, cl.genes==2]))
+```
+
+#Plot a bar chart which contains the percentage of each clock which has at least a certain number of associations in cis / in trans.
+```{r}
+#
+#Associations in cis
+#
+
+cpg.cis.merge <- rbind(cis.hannum$cpg.assoc, cis.horvath$cpg.assoc, cis.skinblood$cpg.assoc, cis.zhang$cpg.assoc)
+cpg.cis.merge$Group <- factor(cpg.cis.merge$Group, levels = c("hannum", "horvath", "skinblood", "zhang"))
+levels(cpg.cis.merge$Group) <- clock.names
+cpg.cis.merge$`Cutoff.1` <- cpg.cis.merge$`Number of associations` >= 1
+head(cpg.cis.merge)
+
+cutoffs.cis <- t(as.matrix(
+  round(c(
+    length(which(cpg.cis.merge[cpg.cis.merge$Group == clock.names[1],]$Cutoff.1 == TRUE)) / nrow(cpg.cis.merge[cpg.cis.merge$Group == clock.names[1],]),
+    length(which(cpg.cis.merge[cpg.cis.merge$Group == clock.names[2],]$Cutoff.1 == TRUE)) / nrow(cpg.cis.merge[cpg.cis.merge$Group == clock.names[2],]),
+    length(which(cpg.cis.merge[cpg.cis.merge$Group == clock.names[3],]$Cutoff.1 == TRUE)) / nrow(cpg.cis.merge[cpg.cis.merge$Group == clock.names[3],]),
+    length(which(cpg.cis.merge[cpg.cis.merge$Group == clock.names[4],]$Cutoff.1 == TRUE)) / nrow(cpg.cis.merge[cpg.cis.merge$Group == clock.names[4],])
+  ),
+  digits = 2)))
+
+dimnames(cutoffs.cis) <- list(">1", clock.names)
+cutoffs.cis <- as.data.frame(cutoffs.cis)
+cutoffs.cis$Associations <- rownames(cutoffs.cis)
+cutoffs.cis
+
+library(reshape)
+melt.cutoffs.cis <- melt(cutoffs.cis, id = c("Associations"))
+colnames(melt.cutoffs.cis) <- c("Associations", "Clock", "Percentage")
+melt.cutoffs.cis$Associations <- factor(melt.cutoffs.cis$Associations, levels = c(">1"))
+melt.cutoffs.cis$`cis/trans` <- "Associations in cis"
+melt.cutoffs.cis
+
+#
+#Associations in trans
+#
+
+cpg.trans.merge <- rbind(trans.hannum$cpg.assoc, trans.horvath$cpg.assoc, trans.skinblood$cpg.assoc, trans.zhang$cpg.assoc)
+cpg.trans.merge$Group <- factor(cpg.trans.merge$Group, levels = c("hannum", "horvath", "skinblood", "zhang"))
+levels(cpg.trans.merge$Group) <- clock.names
+cpg.trans.merge$`Cutoff.1` <- cpg.trans.merge$`Number of associations` >= 1 & cpg.trans.merge$`Number of associations` < 10
+cpg.trans.merge$`Cutoff.10` <- cpg.trans.merge$`Number of associations` >= 10 & cpg.trans.merge$`Number of associations` < 100
+cpg.trans.merge$`Cutoff.100` <- cpg.trans.merge$`Number of associations` >= 100
+head(cpg.trans.merge)
+
+cutoffs.trans <- rbind(
+  round(c(
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]$Cutoff.1 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]$Cutoff.1 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]$Cutoff.1 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],]$Cutoff.1 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],])
+  ),digits = 2),
+  
+  round(c(
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]$Cutoff.10 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]$Cutoff.10 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]$Cutoff.10 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],]$Cutoff.10 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],])
+  ),digits = 2),
+  
+   round(c(
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]$Cutoff.100 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[1],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]$Cutoff.100 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[2],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]$Cutoff.100 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[3],]),
+    length(which(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],]$Cutoff.100 == TRUE)) / nrow(cpg.trans.merge[cpg.trans.merge$Group == clock.names[4],])
+  ),digits = 2)
+)
+
+dimnames(cutoffs.trans) <- list(c(">1", ">10", ">100"), clock.names)
+cutoffs.trans <- as.data.frame(cutoffs.trans)
+cutoffs.trans$Associations <- rownames(cutoffs.trans)
+head(cutoffs.trans)
+
+melt.cutoffs.trans <- melt(cutoffs.trans, id = c("Associations"))
+colnames(melt.cutoffs.trans) <- c("Associations", "Clock", "Percentage")
+melt.cutoffs.trans$Associations <- factor(melt.cutoffs.trans$Associations, levels = c(">1", ">10", ">100"))
+melt.cutoffs.trans$`cis/trans` <- "Associations in trans"
+melt.cutoffs.trans
+
+#
+#Merge the two dataframe, and plot them.
+#
+
+melt.cutoffs.merge <- rbind(melt.cutoffs.cis, melt.cutoffs.trans)
+melt.cutoffs.merge
+
+#Plot a stacked bar chart containing the percentages of cpgs of each clock associating with at least 1, 10, or 100 genes.
+library(RColorBrewer)
+library(ggplot2)
+ggplot(melt.cutoffs.merge, aes(fill=Associations, y=Percentage, x=Clock)) + 
+  theme_grey(base_size = 15) +
+  theme(plot.title = element_text(size = 15), 
+        axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank(), 
+        legend.position = "top", legend.direction = "horizontal", legend.text = element_text(size = 10)) +
+  geom_bar(position="stack", stat="identity", color = "black", width = 0.8) +
+  facet_wrap(~`cis/trans`, scales = "free", nrow = 2, ncol = 1) +
+  scale_fill_brewer(palette = "Blues", guide = guide_legend(title.position = "top", label.position = "right", title.hjust = 0.5)) +
+  scale_y_continuous(limits = c(0, 0.60), breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)) + 
+  ylab("Fraction")
+ggsave(filename = "Output/Plot_09b.1_Association_percentages.png", width = 3.0, height = 9)
+
+#Make two separate figures for the cis and trans-associations only.
+ggplot(melt.cutoffs.cis, aes(fill=Associations, y=Percentage, x=Clock)) + 
+  theme_grey(base_size = 15) +
+  theme(plot.title = element_text(size = 15), 
+        axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank(), 
+        legend.position = "top", legend.direction = "horizontal", legend.text = element_text(size = 10)) +
+  geom_bar(position="stack", stat="identity", color = "black", width = 0.8) +
+  scale_fill_brewer(palette = "Blues", guide = guide_legend(title.position = "top", label.position = "right", title.hjust = 0)) +
+  scale_y_continuous(limits = c(0, 0.60), breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)) + 
+  labs(y = "Fraction", fill = "Associations in cis")
+ggsave(filename = "Output/Plot_09b.2_Association_percentages_cis.png", width = 3.0, height = 4.8)
+
+ggplot(melt.cutoffs.trans, aes(fill=Associations, y=Percentage, x=Clock)) + 
+  theme_grey(base_size = 15) +
+  theme(plot.title = element_text(size = 15), 
+        axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank(), 
+        legend.position = "top", legend.direction = "horizontal", legend.text = element_text(size = 10)) +
+  geom_bar(position="stack", stat="identity", color = "black", width = 0.8) +
+  scale_fill_brewer(palette = "Blues", guide = guide_legend(title.position = "top", label.position = "right", title.hjust = 0)) +
+  scale_y_continuous(limits = c(0, 0.60), breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)) + 
+  labs(y = "Fraction", fill = "Associations in trans")
+ggsave(filename = "Output/Plot_09b.3_Association_percentages_trans.png", width = 3.0, height = 4.8)
+```
+
+#Save the genes which associate with at least 1 CpG in cis / in trans. For the associations in trans, also save the top genes, which are defined as the genes which associate with at least 5% of their respective clock CpGs.
+```{r}
+cis <- list(
+  hannum = cis.hannum$gene.assoc[which(cis.hannum$gene.assoc$`Number of associations` >= 1),],
+  horvath = cis.horvath$gene.assoc[which(cis.horvath$gene.assoc$`Number of associations` >= 1),],
+  skinblood = cis.skinblood$gene.assoc[which(cis.skinblood$gene.assoc$`Number of associations` >= 1),],
+  zhang = cis.zhang$gene.assoc[which(cis.zhang$gene.assoc$`Number of associations` >= 1),]
+)
+
+trans <- list(
+  hannum = trans.hannum$gene.assoc[which(trans.hannum$gene.assoc$`Number of associations` >= 1),],
+  horvath = trans.horvath$gene.assoc[which(trans.horvath$gene.assoc$`Number of associations` >= 1),],
+  skinblood = trans.skinblood$gene.assoc[which(trans.skinblood$gene.assoc$`Number of associations` >= 1),],
+  zhang = trans.zhang$gene.assoc[which(trans.zhang$gene.assoc$`Number of associations` >= 1),]
+)
+
+top.trans <- list(
+  hannum = trans.hannum$gene.assoc[which(trans.hannum$gene.assoc$`Number of associations` >= (length(hannum)/20)),],
+  horvath = trans.horvath$gene.assoc[which(trans.horvath$gene.assoc$`Number of associations` >= (length(horvath)/20)),],
+  skinblood = trans.skinblood$gene.assoc[which(trans.skinblood$gene.assoc$`Number of associations` >= (length(skinblood)/20)),],
+  zhang = trans.zhang$gene.assoc[which(trans.zhang$gene.assoc$`Number of associations` >= (length(zhang)/20)),]
+)
+```
+
+#Analyze the similarity between the top hits in cis and in trans by calculating the Jaccard index (intersect/union).
+NB: for the cis-genes, all genes which associate with at least 1 CpG will be analyzed. For trans-genes, only the genes which associate with at least 5% of their respective clock CpGs will be analyzed.
+```{r}
+#Calculate the absolute number of overlapping genes between each clock pair.
+Overlaps <- function(set1, set2, set3, set4){
+  OL11 <- length(intersect(set1$Ensembl.ID, set1$Ensembl.ID))
+  OL12 <- length(intersect(set1$Ensembl.ID, set2$Ensembl.ID))
+  OL13 <- length(intersect(set1$Ensembl.ID, set3$Ensembl.ID))
+  OL14 <- length(intersect(set1$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL21 <- length(intersect(set2$Ensembl.ID, set1$Ensembl.ID))
+  OL22 <- length(intersect(set2$Ensembl.ID, set2$Ensembl.ID))
+  OL23 <- length(intersect(set2$Ensembl.ID, set3$Ensembl.ID))
+  OL24 <- length(intersect(set2$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL31 <- length(intersect(set3$Ensembl.ID, set1$Ensembl.ID))
+  OL32 <- length(intersect(set3$Ensembl.ID, set2$Ensembl.ID))
+  OL33 <- length(intersect(set3$Ensembl.ID, set3$Ensembl.ID))
+  OL34 <- length(intersect(set3$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL41 <- length(intersect(set4$Ensembl.ID, set1$Ensembl.ID))
+  OL42 <- length(intersect(set4$Ensembl.ID, set2$Ensembl.ID))
+  OL43 <- length(intersect(set4$Ensembl.ID, set3$Ensembl.ID))
+  OL44 <- length(intersect(set4$Ensembl.ID, set4$Ensembl.ID))
+  
+  #Add the overlaps indices to a matrix.
+  overlaps <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total genes"), c(clock.names, "Total genes")))
+  overlaps[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
+  overlaps[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
+  overlaps[3,1:4] <- as.numeric(c(OL31, OL32, OL33, OL34))
+  overlaps[4,1:4] <- as.numeric(c(OL41, OL42, OL43, OL44))
+  
+  #Find the number of unique gene which associate with the 4 clocks.
+  unq.genes <- unique(c(rownames(set1), rownames(set2), rownames(set3), rownames(set4)))
+  
+  overlaps[5,] <- c(nrow(set1), nrow(set2), nrow(set3), nrow(set4), length(unq.genes))
+  overlaps[,5] <- overlaps[5,]
+  
+  return(overlaps)
+}
+
+overlaps.cis <- as.data.frame(round(Overlaps(cis$hannum, cis$horvath, cis$skinblood, cis$zhang), digits = 2))
+overlaps.trans <- as.data.frame(round(Overlaps(trans$hannum, trans$horvath, trans$skinblood, trans$zhang), digits = 2))
+overlaps.top.trans <- as.data.frame(round(Overlaps(top.trans$hannum, top.trans$horvath, top.trans$skinblood, top.trans$zhang), digits = 2))
+
+overlaps.cis
+overlaps.trans
+overlaps.top.trans
+
+#Calculate the Jaccard indices (intersect / union) of overlapping genes between each clock pair.
+Jaccard <- function(set1, set2, set3, set4){
+  OL11 <- length(intersect(set1$Ensembl.ID, set1$Ensembl.ID)) / length(union(set1$Ensembl.ID, set1$Ensembl.ID))
+  OL12 <- length(intersect(set1$Ensembl.ID, set2$Ensembl.ID)) / length(union(set1$Ensembl.ID, set2$Ensembl.ID))
+  OL13 <- length(intersect(set1$Ensembl.ID, set3$Ensembl.ID)) / length(union(set1$Ensembl.ID, set3$Ensembl.ID))
+  OL14 <- length(intersect(set1$Ensembl.ID, set4$Ensembl.ID)) / length(union(set1$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL21 <- length(intersect(set2$Ensembl.ID, set1$Ensembl.ID)) / length(union(set2$Ensembl.ID, set1$Ensembl.ID))
+  OL22 <- length(intersect(set2$Ensembl.ID, set2$Ensembl.ID)) / length(union(set2$Ensembl.ID, set2$Ensembl.ID))
+  OL23 <- length(intersect(set2$Ensembl.ID, set3$Ensembl.ID)) / length(union(set2$Ensembl.ID, set3$Ensembl.ID))
+  OL24 <- length(intersect(set2$Ensembl.ID, set4$Ensembl.ID)) / length(union(set2$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL31 <- length(intersect(set3$Ensembl.ID, set1$Ensembl.ID)) / length(union(set3$Ensembl.ID, set1$Ensembl.ID))
+  OL32 <- length(intersect(set3$Ensembl.ID, set2$Ensembl.ID)) / length(union(set3$Ensembl.ID, set2$Ensembl.ID))
+  OL33 <- length(intersect(set3$Ensembl.ID, set3$Ensembl.ID)) / length(union(set3$Ensembl.ID, set3$Ensembl.ID))
+  OL34 <- length(intersect(set3$Ensembl.ID, set4$Ensembl.ID)) / length(union(set3$Ensembl.ID, set4$Ensembl.ID))
+  
+  OL41 <- length(intersect(set4$Ensembl.ID, set1$Ensembl.ID)) / length(union(set4$Ensembl.ID, set1$Ensembl.ID))
+  OL42 <- length(intersect(set4$Ensembl.ID, set2$Ensembl.ID)) / length(union(set4$Ensembl.ID, set2$Ensembl.ID))
+  OL43 <- length(intersect(set4$Ensembl.ID, set3$Ensembl.ID)) / length(union(set4$Ensembl.ID, set3$Ensembl.ID))
+  OL44 <- length(intersect(set4$Ensembl.ID, set4$Ensembl.ID)) / length(union(set4$Ensembl.ID, set4$Ensembl.ID))
+  
+  #Add the jaccard indices to a matrix.
+  jaccard <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total genes"), c(clock.names, "Total genes")))
+  jaccard[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
+  jaccard[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
+  jaccard[3,1:4] <- as.numeric(c(OL31, OL32, OL33, OL34))
+  jaccard[4,1:4] <- as.numeric(c(OL41, OL42, OL43, OL44))
+  
+  #Find the number of unique gene which associate with the 4 clocks.
+  unq.genes <- unique(c(rownames(set1), rownames(set2), rownames(set3), rownames(set4)))
+  
+  jaccard[5,] <- c(nrow(set1), nrow(set2), nrow(set3), nrow(set4), length(unq.genes))
+  jaccard[,5] <- jaccard[5,]
+  
+  return(jaccard)
+}
+
+jaccard.cis <- as.data.frame(round(Jaccard(cis$hannum, cis$horvath, cis$skinblood, cis$zhang), digits = 2))
+jaccard.trans <- as.data.frame(round(Jaccard(trans$hannum, trans$horvath, trans$skinblood, trans$zhang), digits = 2))
+jaccard.top.trans <- as.data.frame(round(Jaccard(top.trans$hannum, top.trans$horvath, top.trans$skinblood, top.trans$zhang), digits = 2))
+
+jaccard.cis
+jaccard.trans
+jaccard.top.trans
+```
+
+#Calculate the gene set enrichments of the genes associating with the clocks.
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+background <- as.character(rownames(counts))
+
+gse <- list(
+  hannum = list(
+    cis = enrichGO(gene = cis$hannum$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    trans = enrichGO(gene = trans$hannum$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    top.trans = enrichGO(gene = top.trans$hannum$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP")
+  ),
+  horvath = list(
+    cis = enrichGO(gene = cis$horvath$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    trans = enrichGO(gene = trans$horvath$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    top.trans = enrichGO(gene = top.trans$horvath$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP")
+  ),
+  skinblood = list(
+    cis = enrichGO(gene = cis$skinblood$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    trans = enrichGO(gene = trans$skinblood$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    top.trans = enrichGO(gene = top.trans$skinblood$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP")
+  ),
+  zhang = list(
+    cis = enrichGO(gene = cis$zhang$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    trans = enrichGO(gene = trans$zhang$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP"),
+    top.trans = enrichGO(gene = top.trans$zhang$Ensembl.ID, universe = background, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL", ont = "BP")
+  )
+)
+
+#Print the GO-terms name and adjusted p-value of the top 20 most significant enrichments.
+head(gse$hannum$cis@result[gse$hannum$cis@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$horvath$cis@result[gse$horvath$cis@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$skinblood$cis@result[gse$skinblood$cis@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$zhang$cis@result[gse$zhang$cis@result$p.adjust < 0.05, c(2,6)], 20)
+
+head(gse$hannum$trans@result[gse$hannum$trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$horvath$trans@result[gse$horvath$trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$skinblood$trans@result[gse$skinblood$trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$zhang$trans@result[gse$zhang$trans@result$p.adjust < 0.05, c(2,6)], 20)
+
+head(gse$hannum$top.trans@result[gse$hannum$top.trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$horvath$top.trans@result[gse$horvath$top.trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$skinblood$top.trans@result[gse$skinblood$top.trans@result$p.adjust < 0.05, c(2,6)], 20)
+head(gse$zhang$top.trans@result[gse$zhang$top.trans@result$p.adjust < 0.05, c(2,6)], 20)
+```
+
+#Export data to Excel-files.
+```{r}
+#Save associations in cis/in trans for CpGs and genes.
+library(xlsx)
+Save.Excel <- function(path){
+  wb = createWorkbook()
+  
+  sheet = createSheet(wb, "Hannum Bld")
+  addDataFrame(xl.hannum, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Horvath MT")
+  addDataFrame(xl.horvath, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Horvath Skn Bld")
+  addDataFrame(xl.skinblood, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Zhang Bld Slv")
+  addDataFrame(xl.zhang, sheet=sheet, startColumn=1, row.names=FALSE)
+  
+  saveWorkbook(wb, path)
+}
+
+  #Save the cis-associations per CpG as an Excel file.
+  xl.hannum <- data.frame(CpG = cis.hannum$cpg.assoc$CpG, Number.of.associations = cis.hannum$cpg.assoc$`Number of associations`)
+  xl.horvath <- data.frame(CpG = cis.horvath$cpg.assoc$CpG, Number.of.associations = cis.horvath$cpg.assoc$`Number of associations`)
+  xl.skinblood <- data.frame(CpG = cis.skinblood$cpg.assoc$CpG, Number.of.associations = cis.skinblood$cpg.assoc$`Number of associations`)
+  xl.zhang <- data.frame(CpG = cis.zhang$cpg.assoc$CpG, Number.of.associations = cis.zhang$cpg.assoc$`Number of associations`)
+  Save.Excel("Output/Output_09b.1_twas_cpgs_cis.xlsx")
+  
+  #Save the trans-associations per CpG as an Excel file.
+  xl.hannum <- data.frame(CpG = trans.hannum$cpg.assoc$CpG, Number.of.associations = trans.hannum$cpg.assoc$`Number of associations`)
+  xl.horvath <- data.frame(CpG = trans.horvath$cpg.assoc$CpG, Number.of.associations = trans.horvath$cpg.assoc$`Number of associations`)
+  xl.skinblood <- data.frame(CpG = trans.skinblood$cpg.assoc$CpG, Number.of.associations = trans.skinblood$cpg.assoc$`Number of associations`)
+  xl.zhang <- data.frame(CpG = trans.zhang$cpg.assoc$CpG, Number.of.associations = trans.zhang$cpg.assoc$`Number of associations`)
+  Save.Excel("Output/Output_09b.2_twas_cpgs_trans.xlsx")
+  
+  #Save the cis-associations per gene as an Excel file.
+  xl.hannum <- data.frame(Ensembl.ID = cis.hannum$gene.assoc$Ensembl.ID, Number.of.associations = cis.hannum$gene.assoc$`Number of associations`)
+  xl.horvath <- data.frame(Ensembl.ID = cis.horvath$gene.assoc$Ensembl.ID, Number.of.associations = cis.horvath$gene.assoc$`Number of associations`)
+  xl.skinblood <- data.frame(Ensembl.ID = cis.skinblood$gene.assoc$Ensembl.ID, Number.of.associations = cis.skinblood$gene.assoc$`Number of associations`)
+  xl.zhang <- data.frame(Ensembl.ID = cis.zhang$gene.assoc$Ensembl.ID, Number.of.associations = cis.zhang$gene.assoc$`Number of associations`)
+  Save.Excel("Output/Output_09b.3_twas_genes_cis.xlsx")
+  
+  #Save the trans-associations per gene as an Excel file.
+  xl.hannum <- data.frame(Ensembl.ID = trans.hannum$gene.assoc$Ensembl.ID, Number.of.associations = trans.hannum$gene.assoc$`Number of associations`)
+  xl.horvath <- data.frame(Ensembl.ID = trans.horvath$gene.assoc$Ensembl.ID, Number.of.associations = trans.horvath$gene.assoc$`Number of associations`)
+  xl.skinblood <- data.frame(Ensembl.ID = trans.skinblood$gene.assoc$Ensembl.ID, Number.of.associations = trans.skinblood$gene.assoc$`Number of associations`)
+  xl.zhang <- data.frame(Ensembl.ID = trans.zhang$gene.assoc$Ensembl.ID, Number.of.associations = trans.zhang$gene.assoc$`Number of associations`)
+  Save.Excel("Output/Output_09b.4_twas_genes_trans.xlsx")
+  
+  #Save the top-trans-associations (>5%) per gene as an Excel file.
+  xl.hannum <- data.frame(Ensembl.ID = trans.hannum$gene.assoc$Ensembl.ID, Number.of.associations = trans.hannum$gene.assoc$`Number of associations`)
+  xl.horvath <- data.frame(Ensembl.ID = trans.horvath$gene.assoc$Ensembl.ID, Number.of.associations = trans.horvath$gene.assoc$`Number of associations`)
+  xl.skinblood <- data.frame(Ensembl.ID = trans.skinblood$gene.assoc$Ensembl.ID, Number.of.associations = trans.skinblood$gene.assoc$`Number of associations`)
+  xl.zhang <- data.frame(Ensembl.ID = trans.zhang$gene.assoc$Ensembl.ID, Number.of.associations = trans.zhang$gene.assoc$`Number of associations`)
+  Save.Excel("Output/Output_09b.5_twas_genes_top.trans.xlsx")
+  
+#Save the overlaps between gene sets.
+Save.Excel <- function(path){
+  wb = createWorkbook()
+  
+  sheet = createSheet(wb, "Overlap cis-genes")
+  addDataFrame(xl.cis, sheet=sheet, startColumn=1, row.names=TRUE)
+  sheet = createSheet(wb, "Overlap trans-genes")
+  addDataFrame(xl.trans, sheet=sheet, startColumn=1, row.names=TRUE)
+  sheet = createSheet(wb, "Overlap top trans-genes")
+  addDataFrame(xl.top.trans, sheet=sheet, startColumn=1, row.names=TRUE)
+  
+  saveWorkbook(wb, path)
+}
+
+  xl.cis <- as.data.frame(overlaps.cis)
+  xl.trans <- as.data.frame(overlaps.trans)
+  xl.top.trans <- as.data.frame(overlaps.top.trans)
+  Save.Excel("Output/Output_09c.1_twas_genes_overlaps.xlsx")
+  
+  xl.cis <- as.data.frame(jaccard.cis)
+  xl.trans <- as.data.frame(jaccard.trans)
+  xl.top.trans <- as.data.frame(jaccard.top.trans)
+  Save.Excel("Output/Output_09c.2_twas_genes_jaccard_indices.xlsx")
+  
+#Save the GO-enrichments of each clock's cis-genes, trans-genes, and top trans-genes.
+Save.Excel <- function(path){
+  wb = createWorkbook()
+  
+  sheet = createSheet(wb, "Hannum Bld")
+  addDataFrame(xl.hannum, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Horvath MT")
+  addDataFrame(xl.horvath, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Horvath Skn Bld")
+  addDataFrame(xl.skinblood, sheet=sheet, startColumn=1, row.names=FALSE)
+  sheet = createSheet(wb, "Zhang Bld Slv")
+  addDataFrame(xl.zhang, sheet=sheet, startColumn=1, row.names=FALSE)
+  
+  saveWorkbook(wb, path)
+}
+
+  xl.hannum <- data.frame(gse$hannum$cis[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.horvath <- data.frame(gse$horvath$cis[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.skinblood <- data.frame(gse$skinblood$cis[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.zhang <- data.frame(gse$zhang$cis[,c(1, 6, 2, 3, 4, 8, 9)])
+  Save.Excel("Output/Output_09d.1_twas_GO_enrichments_cis.xlsx")
+  
+  xl.hannum <- data.frame(gse$hannum$trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.horvath <- data.frame(gse$horvath$trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.skinblood <- data.frame(gse$skinblood$trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.zhang <- data.frame(gse$zhang$trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  Save.Excel("Output/Output_09d.2_twas_GO_enrichments_trans.xlsx")
+  
+  xl.hannum <- data.frame(gse$hannum$top.trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.horvath <- data.frame(gse$horvath$top.trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.skinblood <- data.frame(gse$skinblood$top.trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  xl.zhang <- data.frame(gse$zhang$top.trans[,c(1, 6, 2, 3, 4, 8, 9)])
+  Save.Excel("Output/Output_09d.3_twas_GO_enrichments_top.trans.xlsx")
+```
+
+#WIP: write data to csv files for reporting.
+```{r}
+#Create a cleaned-up dataframe of the cis-associations per CpG, and save it as a csv-file.
+info <- clocks[rownames(cis.clocks$cpg.assoc),]
+csv.cpg.cis <- data.frame(
+  CpG = names(info),
+  Hannum.Bld = info$hannum,
+  Horvath.MT = info$horvath,
+  Horvath.Skn.Bld = info$skinblood,
+  Zhang.Bld.Slv = info$zhang,
+  Associations = cis.clocks$cpg.assoc$`Number of associations`,
+  Associating.genes = cis.clocks$cpg.assoc$`Associating genes`
+  )
+
+csv.cpg.cis$Associating.genes.symbols = apply(csv.cpg.cis, 1, function(x){
+  paste(GeneEns[unlist(strsplit(x[7], split = ","))]$symbol, collapse = ",")
+  })
+
+head(csv.cpg.cis)
+write.csv(csv.cpg.cis, file = "Output/Output_09e.1_cis_associations_cpgs.csv")
+
+#Now do the same for the associations per gene.
+info <- GeneEns[rownames(cis.clocks$gene.assoc),]
+csv.gene.cis <- data.frame(
+  Ensembl.ID = names(info),
+  Gene.symbol = info$symbol,
+  Associations = cis.clocks$gene.assoc$`Number of associations`,
+  Associating.CpGs = cis.clocks$gene.assoc$`Associating CpGs`
+  )
+head(csv.gene.cis)
+write.csv(csv.gene.cis, file = "Output/Output_09e.2_cis_associations_genes.csv")
+
+
+
+#Create a cleaned-up dataframe of the trans-associations per CpG, and save it as a csv-file.
+info <- clocks[rownames(trans.clocks$cpg.assoc),]
+csv.cpg.trans <- data.frame(
+  CpG = names(info),
+  Hannum.Bld = info$hannum,
+  Horvath.MT = info$horvath,
+  Horvath.Skn.Bld = info$skinblood,
+  Zhang.Bld.Slv = info$zhang,
+  Associations = trans.clocks$cpg.assoc$`Number of associations`,
+  Associating.genes = trans.clocks$cpg.assoc$`Associating genes`
+  )
+
+csv.cpg.trans$Associating.genes.symbols = apply(csv.cpg.trans, 1, function(x){
+  paste(GeneEns[unlist(strsplit(x[7], split = ","))]$symbol, collapse = ",")
+  })
+
+head(csv.cpg.trans)
+write.csv(csv.cpg.trans, file = "Output/Output_09f.1_trans_associations_cpgs.csv")
+
+#Now do the same for the associations per gene.
+info <- GeneEns[rownames(trans.clocks$gene.assoc),]
+csv.gene.trans <- data.frame(
+  Ensembl.ID = names(info),
+  Gene.symbol = info$symbol,
+  Associations = trans.clocks$gene.assoc$`Number of associations`,
+  Associating.CpGs = trans.clocks$gene.assoc$`Associating CpGs`
+  )
+head(csv.gene.trans)
+write.csv(csv.gene.trans, file = "Output/Output_09f.2_trans_associations_genes.csv")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```

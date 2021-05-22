@@ -1,0 +1,466 @@
+---
+title: "Markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Script information
+
+This script was written to annotate CpGs of the Illumina Infinium 450K DNA methylation array with genic features, CGI features, chromatin states, histone modifications, and EZH2 binding sites.
+
+This script was developed using R version 3.4.3 (64-bits).
+
+#Gene annotation
+
+This script was written to prepare genic feature regions for each gene. Gene-centric annotation was done based on the protein-coding genes in Ensembl build 75 (genome hg19).
+
+Gene-centric annotation was split in 6 regions:
+1) Distal promoter: 10kb - 1.5 kb upstream of the start of exon 0 of any protein-coding gene (obtained from Ensembl).
+2) Proximal promoter: 1.5 kb upstream to 0.5 kb downstream of the start of exon 0 (so 500 bp overlap).
+3) Exons, as annotated by Ensembl.
+4) Introns, as annotated by Ensembl.
+5) Downstream: from the start of the final exon to 5000 bp downstream from the end of that exon.
+6) Intergenic: none of the above.
+
+Schematic representation of the gene-centric annotation:
+
+                               |--------------|---------|-----------------|--------------|
+                               |Exon 1 (first)|Intron 1 |Exon 2,3, etc.   |Exon X (last) |
+                               |              |         |Intron 2,3, etc. |              |
+                               |--------------|---------|-----------------|--------------|
+|------------------|-----------|------|                                                  |--------------------|
+|    Dist.Prom.    |     Prox.Prom    |                                                  |    Downstream      |
+|      8.5 kb      |   1.5 kb  |0.5 kb|                                                  |       5 kb         |
+|------------------|-----------|------|                                                  |--------------------|
+                                ^^^^^^  
+                              500bp overlap
+
+
+These features will be bound to the Infinium 450K CpGs in script 4, together with CGI-centric annotations. 
+
+#CGI feature annotation
+
+CGI-centric annotation was split in 3 regions:
+1)	CGIs, as annotated by UCSC.
+2)	Shores: 2 kb regions flanking the CGIs (both up- and downstream).
+3)	Non-CGI: none of the above.
+
+Schematic representation of the CGI-centric annotation:
+
+----------------------|-------|-------|-------|----------------------
+       Non-CGI        | Shore |  CGI  | Shore |        Non-CGI
+                      | 2 kb  |       | 2 kb  |
+----------------------|-------|-------|-------|----------------------
+
+#Chromatin state and histone modification annotation
+This following code was written to obtain chromatin state segments and histone modifications from Epigenomics Roadmap (accessed through the AnnotationHub package), and annotate these data to the Infinuim 450K CpGs. NB: the Epigenomics Roadmap contains chromatinstate data for 127 tissue types; for this analysis, we chose 7 primary blood cell types: PBMCs, monocytes, neutrophils, B-cells, CD4 T-cells, CD8-T-cells, and NK-cells. For histone modifications, only one cell type (PBMCs) was used; the reason for this is that in prelimianry analysis, chromatin states showed great overlap between cell types, so it doesn't really matter which cell type one chooses.
+
+Instructions on how to use the EPigenomics Roadmap histone modification files (including recommendations on cutoff values): 
+http://genome.ucsc.edu/FAQ/FAQformat.html#format13
+https://sites.google.com/site/anshulkundaje/projects/encodehistonemods
+https://www.nature.com/articles/nature14248
+
+The histone modification data is available in three formats: gappedPeak, broadPeak, and narrowPeak. Use the following files:
+gappedPeak: H3K4me1, H3K4me3, and H3K27ac.
+broadPeak: H3K36me3, H3K27me3, and H3K9me3.
+NB: the instructions that were followed can be found here: https://sites.google.com/site/anshulkundaje/projects/encodehistonemods
+
+Histone modification and EZH2 binding site files have three main columns:
+signalValue - Measurement of overall (usually, average) enrichment for the region.
+pValue - Measurement of statistical significance (-log10). Use -1 if no pValue is assigned. 
+qValue - Measurement of statistical significance using false discovery rate (-log10). Use -1 if no qValue is assigned. In this script, we did not use any cutoff; all peaks were included in the analysis.
+
+#EZH2 binding site annotation
+The data on EZH2-binding sites was obtained from ENCODE file ENCFF126CZP, which was measured in primary B-cells from a 27-year old female adult. The data can be found at the following url: https://www.encodeproject.org/files/ENCFF126CZP/. This file is in the narrowPeak format, and contains optimal idr thresholded peaks.
+
+#Setup
+```{r}
+#Set working directory.
+setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+
+#Set library path.
+.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+
+#Load all necessary libraries.
+library(EnsDb.Hsapiens.v75)
+library(rtracklayer)
+library(FDb.InfiniumMethylation.hg19)
+library(AnnotationHub)
+library(ph525x)
+```
+
+#Retrieve a GRanges file of the Infinium 450K CpGs.
+```{r}
+#Make a GRanges object containing features of all 450K CpGs.
+ann450K <- features(FDb.InfiniumMethylation.hg19)
+
+#Select only the CpGs for which DNA-methylation was measured in the BIOS data.
+load("Input/Input_01a_cpg_names.RData")
+ann450K <- ann450K[cpg.names]
+
+#Remove  metadata and strand information, then sort the object.
+ann450K <- ann450K[,NULL]
+strand(ann450K) <- "*"
+ann450K <- sort(sortSeqlevels(ann450K))
+
+#Remove the X and Y chromosomes.
+ann450K <- dropSeqlevels(ann450K, c("chrX", "chrY"), pruning.mode = "coarse")
+
+#Add the chromosome names to the metadata.
+ann450K$Chromosome <- factor(seqnames(ann450K))
+
+ann450K
+```
+
+#Make Granges objects of genic features.
+```{r}
+#Open ensembl database.
+edb75 <- EnsDb.Hsapiens.v75
+
+#Make a GRanges object of genes, exons, introns, and of exons listed by genes. NB: only keep protein-coding genes.
+#Genes
+GeneEns <- genes(edb75, filter = GeneBiotypeFilter("protein_coding"))
+GeneEns <- keepStandardChromosomes(GeneEns, pruning.mode = "coarse")
+GeneEns <- sort(sortSeqlevels(GeneEns))
+values(GeneEns)[,c(2,4)] <- NULL
+GeneEns
+
+#Exons
+ExEns <- exons(edb75, filter = GeneBiotypeFilter("protein_coding"))
+ExEns <- keepStandardChromosomes(ExEns, pruning.mode = "coarse")
+ExEns <- sort(sortSeqlevels(ExEns))
+
+#Introns (defined as transcripts minus exons)
+TxEns <- transcripts(edb75, filter = GeneBiotypeFilter("protein_coding"))
+TxEns <- keepStandardChromosomes(TxEns, pruning.mode = "coarse")
+TxEns <- sort(sortSeqlevels(TxEns))
+IntrEns <- setdiff(TxEns, ExEns)
+
+#Exons listed by gene
+ExByGene <- exonsBy(edb75, by = "gene", filter = GeneBiotypeFilter("protein_coding"))
+ExByGene <- keepStandardChromosomes(ExByGene, pruning.mode = "coarse")
+ExByGene <- sort(sortSeqlevels(ExByGene))
+```
+
+#Make GRanges objects of the first and last exon per gene.
+```{r}
+#Make empty GRanges for the first exon of each gene.
+exFirst <- GRanges(seqnames = "none", ranges = IRanges(start = rep(0,length(ExByGene)), end = rep(0,length(ExByGene))))
+values(exFirst)[1:2] <- "NA"
+names(mcols(exFirst)) <- names(mcols(ExByGene[[1]]))
+
+#Transfer data.
+for(i in 1:length(ExByGene)){
+  exFirst[i] <- ExByGene[[i]][1]
+}
+
+#Add gene ID metadata and sort exFirst.
+exFirst$gene_id <- names(ExByGene)
+exFirst <- keepStandardChromosomes(exFirst, pruning.mode = "coarse")
+exFirst <- sort(sortSeqlevels(exFirst))
+
+#Add gene-centric metadata to exFirst.
+idx <- match(exFirst$gene_id, GeneEns$gene_id)
+exFirst$Symbol <- GeneEns$symbol[idx]
+
+#Now do the same for the last exons of each gene.
+
+#Make empty GRanges for the last exon of each gene.
+exLast <- GRanges(seqnames = "none", ranges = IRanges(start = rep(0,length(ExByGene)), end = rep(0,length(ExByGene))))
+values(exLast)[1:2] <- "NA"
+names(mcols(exLast)) <- names(mcols(ExByGene[[1]]))
+
+#Transfer data.
+for(i in 1:length(ExByGene)){
+  exLast[i] <- ExByGene[[i]][length(ExByGene[[i]])]
+}
+
+#Add gene ID metadata and sort exLast.
+exLast$gene_id <- names(ExByGene)
+exLast <- keepStandardChromosomes(exLast, pruning.mode = "coarse")
+exLast <- sort(sortSeqlevels(exLast))
+
+#Add gene-centric metadata to exLast.
+idx <- match(exLast$gene_id, GeneEns$gene_id)
+exLast$Symbol <- GeneEns$symbol[idx]
+```
+
+#Prepare promoter (prox. and dist.) and downstream regions.
+```{r}
+#Make a Proximal Promoter object which spans from 1.5 kb downstream of the start of exon 1 to 0.5 kb upstream of it.
+Prox.Prom <- GRanges(seqnames = "none", ranges = IRanges(start = rep(0,length(exFirst)), end = rep(0,length(exFirst))))
+Prox.Prom$gene_id <- "NA"
+Prox.Prom$symbol <- "NA"
+Prox.Prom <- promoters(exFirst[,3:4], upstream=1500, downstream=500)
+
+#Make a Distal Promoter object which spans from 10kb upstream of the start of exon 1 to 1.5 kb upstream of it (flanks Prox.Prom).
+Dist.Prom <- GRanges(seqnames = "none", ranges = IRanges(start = rep(0,length(exFirst)), end = rep(0,length(exFirst))))
+Dist.Prom$gene_id <- "NA"
+Dist.Prom$Symbol <- "NA"
+Dist.Prom <- flank(Prox.Prom, width=8500)
+
+#Make a Downstream object which spans from the end of each gene's last exon to 5 kb downstream of it.
+Downstream <- GRanges(seqnames = "none", ranges = IRanges(start = rep(0,length(exFirst)), end = rep(0,length(exFirst))))
+Downstream$gene_id <- "NA"
+Downstream$Symbol <- "NA"
+Downstream <- flank(exLast[,3:4], start = F, width = 5000)
+```
+
+#(Optional) Visualize the different GRanges objects.
+```{r}
+#Plot the promoters in relation to the first exon.
+par(mar = c(2.5, 3.5, 2.6, 3.5), mgp = c(5.5, 1.5, 0), mfrow=c(4,1))
+plotRanges(exFirst[1], xlim = c(58000, 70500))
+plotRanges(Prox.Prom[1], xlim = c(58000, 70500))
+plotRanges(Dist.Prom[1], xlim = c(58000, 70500))
+
+#Plot the downstream region in relation to the last exon.
+par(mar = c(2.5, 3.5, 2.6, 3.5), mgp = c(5.5, 1.5, 0), mfrow=c(4,1))
+plotRanges(exLast[2], xlim = c(366000, 374000))
+plotRanges(Downstream[2], xlim = c(366000, 374000))
+
+#Check the ranges.
+start(exFirst[1:100]) - start(Prox.Prom[1:100]) #should be 1500
+start(exFirst[1:100]) - end(Prox.Prom[1:100]) #should be -499
+
+start(exFirst[1:100]) - start(Dist.Prom[1:100]) #should be 10000
+start(exFirst[1:100]) - end(Dist.Prom[1:100]) #should be 1501
+
+end(exLast[1:100]) - start(Downstream[1:100]) #should be -1
+end(exLast[1:100]) - end(Downstream[1:100]) #should be -5000
+```
+
+#Annotate nearest genes.
+```{r}
+#Change the seqnames and genome nomenclature of ann450K from hg19 to GRCh37 (this is necessary to allow overlapping).
+seqlevelsStyle(ann450K) <- seqlevelsStyle(GeneEns)
+genome(ann450K) <- genome(GeneEns)
+
+#Find the nearest protein coding gene and the distance for each of the 450K CpGs.
+nearestGene <- nearest(ann450K, GeneEns, select="arbitrary", ignore.strand=TRUE)
+distNearest <- as.data.frame(distanceToNearest(ann450K, GeneEns, select="arbitrary", ignore.strand=TRUE))
+
+#Bind the nearest gene symbols and IDs to the 450K CpGs.
+ann450K$Nearest_Gene <- GeneEns$symbol[nearestGene]
+ann450K$Distance <- distNearest$distance
+ann450K$Ensembl_ID <- GeneEns$gene_id[nearestGene]
+
+ann450K
+```
+
+#Annotate genic features.
+```{r}
+#Make genic feature column.
+ann450K$Genic_Feature <- "NA"
+
+#Annnotate proximal promoters (NB: this is done before annotating exons to ensure that the 500bp overlap is kept).
+OL.pp <- as.matrix(findOverlaps(Prox.Prom, ann450K))[,2]
+OL.pp <- unique(OL.pp)
+ann450K[OL.pp,]$Genic_Feature <- "Proximal Promoter"
+residual <- ann450K[-OL.pp,]
+
+#Annotate exons.
+OL.ex <- as.matrix(findOverlaps(ExEns, residual))[,2]
+OL.ex <- unique(OL.ex)
+nms.ex <- names(residual[OL.ex,])
+ann450K[match(nms.ex,names(ann450K)),]$Genic_Feature <- "Exon"
+residual <- residual[-OL.ex,]
+
+#Annotate introns.
+OL.int <- as.matrix(findOverlaps(IntrEns, residual))[,2]
+OL.int <- unique(OL.int)
+nms.int <- names(residual[OL.int,])
+ann450K[match(nms.int,names(ann450K)),]$Genic_Feature <- "Intron"
+residual <- residual[-OL.int,]
+
+#Annotate distal promoters.
+OL.dp <- as.matrix(findOverlaps(Dist.Prom, residual))[,2]
+OL.dp <- unique(OL.dp)
+nms.dp <- names(residual[OL.dp,])
+ann450K[match(nms.dp,names(ann450K)),]$Genic_Feature <- "Distal Promoter"
+residual <- residual[-OL.dp,]
+
+#Annotate downstream regions.
+OL.ds <- as.matrix(findOverlaps(Downstream, residual))[,2]
+OL.ds <- unique(OL.ds)
+nms.ds <- names(residual[OL.ds,])
+ann450K[match(nms.ds,names(ann450K)),]$Genic_Feature <- "Downstream"
+residual <- residual[-OL.ds,]
+
+#Annotate all that's left as "intergenic".
+ann450K[match(names(residual),names(ann450K)),]$Genic_Feature <- "Intergenic"
+
+#Turn genic features into a factor variable.
+ann450K$Genic_Feature <- factor(ann450K$Genic_Feature, levels = c("Distal Promoter", "Proximal Promoter", "Exon", "Intron", "Downstream", "Intergenic"))
+
+ann450K
+```
+
+#Annotate CGIs.
+```{r}
+#Retrieve CpG islands from the UCSC genome browser.
+mySession = browserSession("UCSC")
+genome(mySession) <- "hg19"
+CpGislands.raw <- getTable(ucscTableQuery(mySession, track="CpG Islands",table="cpgIslandExt"))
+CGI.gr <- GRanges(CpGislands.raw$chrom, IRanges(CpGislands.raw$chromStart+1, CpGislands.raw$chromEnd), name=CpGislands.raw$name)
+seqlevelsStyle(CGI.gr) <- seqlevelsStyle(GeneEns)
+genome(CGI.gr) <- genome(GeneEns)
+CGI.gr <- keepStandardChromosomes(CGI.gr, pruning.mode = "coarse")
+
+#Add CGI annotation (also including shores (within 2000 bp from CGI)).
+#Shores start
+shores1 <- CGI.gr
+shores2 <- CGI.gr
+start(shores1) <- start(CGI.gr) - 2000
+end(shores1) <- start(CGI.gr)
+
+#Shores end
+end(shores2) <- end(CGI.gr) + 2000
+start(shores2) <- end(CGI.gr) 
+shores <- c(shores1, shores2)
+
+#Add the CGI annotations to the 450K CpGs.
+
+#Non-CGI
+ann450K$CGI_Feature <- rep("non-CGI")
+
+#Shore
+OL.sho <- as.matrix(findOverlaps(shores, ann450K))[,2]
+OL.sho <- unique(OL.sho)
+ann450K[OL.sho,]$CGI_Feature <- "Shore"
+
+#CGI
+OL.cgi <- as.matrix(findOverlaps(CGI.gr, ann450K))[,2]
+OL.cgi <- unique(OL.cgi)
+ann450K[OL.cgi,]$CGI_Feature <- "CGI"
+
+#Turn CGI features into a factor variable.
+ann450K$CGI_Feature <- factor(ann450K$CGI_Feature, levels = c("CGI", "Shore", "non-CGI"))
+
+ann450K
+```
+
+#Annotate chromatin state segments.
+```{r}
+#Open an AnnotationHub instance.
+ah <- AnnotationHub()
+
+#Query data on the 15 chromatin state segments in PBMCs as calculated from histone modifications by the Epigenomics Roadmap's Hidden Markov model (chromHMM).
+ChromState <- query(ah, c("EpigenomeRoadMap", "chromHMM"))
+ChromState <- query(ChromState, c("blood", "peripheral"))
+ChromState <- ChromState[[grep("mononuclear cells", ChromState$tags, ignore.case = T)]]
+
+#Keep only the chromatin state metadata (abbreviated and full).
+ChromState <- ChromState[,c(1,2)]
+names(mcols(ChromState)) <- c("Chromatin.state.abbr", "Chromatin.state.full")
+ChromState
+
+#Standardize the genome styles to allow overlapping.
+seqlevelsStyle(ann450K) <- seqlevelsStyle(ChromState)
+genome(ann450K) <- genome(ChromState)
+
+# Annotate chromatin states. 
+OL <- findOverlaps(ann450K, ChromState)
+dupe_OL <- which(duplicated(queryHits(OL)))
+unique_OL <- OL[-dupe_OL]
+ann450K$Chromatin.state.abbr <- "NA"
+ann450K$Chromatin.state.full <- "NA"
+ann450K$Chromatin.state.abbr[queryHits(unique_OL)] <- ChromState$Chromatin.state.abbr[subjectHits(unique_OL)]
+ann450K$Chromatin.state.full[queryHits(unique_OL)] <- ChromState$Chromatin.state.full[subjectHits(unique_OL)]
+
+#Turn the annotations into factors.
+abbr.levels <- c("1_TssA", "2_TssAFlnk", "3_TxFlnk", "4_Tx", "5_TxWk", "6_EnhG", "7_Enh", "8_ZNF/Rpts", "9_Het", "10_TssBiv", "11_BivFlnk", "12_EnhBiv", "13_ReprPC", "14_ReprPCWk", "15_Quies")
+full.levels <- c("Active TSS", "Flanking Active TSS", "Transcr. at gene 5' and 3'", "Strong transcription", "Weak transcription", "Genic enhancers", "Enhancers", "ZNF genes & repeats", "Heterochromatin", "Bivalent/Poised TSS", "Flanking Bivalent TSS/Enh", "Bivalent Enhancer", "Repressed PolyComb", "Weak Repressed PolyComb", "Quiescent/Low")
+
+ann450K$Chromatin.state.abbr <- factor(ann450K$Chromatin.state.abbr, levels = abbr.levels)
+ann450K$Chromatin.state.full <- factor(ann450K$Chromatin.state.full, levels = full.levels)
+
+ann450K
+```
+
+#Annotate histone modifications.
+```{r}
+#Query the followinghistone modifications: H3K4me3, H3K4me1, H3K27ac, H3K36me3, H3K27me3, H3K9me3. 
+histmod <- query(ah, c("EpigenomeRoadMap", "H3K", "Peak", "mononuclear cells"))
+rmv <- grepl("narrowPeak", histmod$title)
+histmod <- histmod[rmv == F]
+gappedPeak <- query(histmod, "gappedPeak")
+broadPeak <- query(histmod, "broadPeak")
+
+#Download the gappedPeak files for H3K4me1, H3K4me3, and H3K27ac.
+H3K4me1 <- gappedPeak[[grep("H3K4me1", gappedPeak$title)]]
+H3K4me3 <- gappedPeak[[grep("H3K4me3", gappedPeak$title)]]
+H3K27ac <- gappedPeak[[grep("H3K27ac", gappedPeak$title)]]
+
+#Download the broadPeak files for H3K36me3, H3K27me3, and H3K9me3.
+H3K36me3 <- broadPeak[[grep("H3K36me3", broadPeak$title)]]
+H3K27me3 <- broadPeak[[grep("H3K27me3", broadPeak$title)]]
+H3K9me3 <- broadPeak[[grep("H3K9me3", broadPeak$title)]]
+
+# Annotate H3K4me1 marks.
+OL <- findOverlaps(ann450K, H3K4me1)
+ann450K$H3K4me1 <- F
+ann450K$H3K4me1[queryHits(OL)] <- T
+
+# Annotate H3K4me3 marks.
+OL <- findOverlaps(ann450K, H3K4me3)
+ann450K$H3K4me3 <- F
+ann450K$H3K4me3[queryHits(OL)] <- T
+
+# Annotate H3K27ac marks.
+OL <- findOverlaps(ann450K, H3K27ac)
+ann450K$H3K27ac <- F
+ann450K$H3K27ac[queryHits(OL)] <- T
+
+# Annotate H3K36me3 marks.
+OL <- findOverlaps(ann450K, H3K36me3)
+ann450K$H3K36me3 <- F
+ann450K$H3K36me3[queryHits(OL)] <- T
+
+# Annotate H3K27me3 marks.
+OL <- findOverlaps(ann450K, H3K27me3)
+ann450K$H3K27me3 <- F
+ann450K$H3K27me3[queryHits(OL)] <- T
+
+# Annotate H3K9me3 marks.
+OL <- findOverlaps(ann450K, H3K9me3)
+ann450K$H3K9me3 <- F
+ann450K$H3K9me3[queryHits(OL)] <- T
+
+ann450K
+```
+
+#Annotate EZH2 binding sites.
+```{r}
+#Import the file. NOTE: because ENCODE does not follow the default settings for BED files, you need to define some additional columns first.
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",
+                          qValue = "numeric", peak = "integer")
+
+EZH2 <- import("Input/Input_01b_ezh2_binding_sites.bed", format = "BED", extraCols = extraCols_narrowPeak)
+
+idx <- order(EZH2$qValue, decreasing = T)
+EZH2 <- EZH2[idx]
+EZH2
+
+# Annotate EZH2 binding sites. NOTE: for transcription factors, an overlap is called even if the binding site and the CpG are within 25bp of each other.
+OL <- findOverlaps(ann450K, EZH2, maxgap = 24)
+ann450K$EZH2 <- F
+ann450K$EZH2[queryHits(OL)] <- T
+table(ann450K$EZH2)
+
+ann450K
+```
+
+#save the files.
+```{r}
+save(GeneEns, file = "Output/Output_01a_ensembl_genes.RData")
+save(ann450K, file = "Output/Output_01b_450K_annotation.RData")
+```
+
+#Session info.
+```{r}
+sessionInfo()
+```
