@@ -9,17 +9,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Script information
 
-In this script, the DNA methylation clocks will be used to predict age, and their performance will be tested with each other. Also, the correlation of the M-values of these CpGs will be analyzed within each clock (to see if there seen to be higher-order processes going on), and between clocks (to see if the clocks measure similar things).
-
-This script was developed using R version 3.4.3 (64-bits).
+This script compares the 4 clocks in terms of how their CpGs overlap and correlate.
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(GenomicRanges)
@@ -32,10 +30,9 @@ options(stringsAsFactors = F)
 
 #Load data.
 ```{r}
-load("Output/Output_02a_all_aDMP_sets.RData")
+load("Output/Output_02a_clocks.RData")
 load("Input/Input_05a_heatmap_function.RData")
-load("Output/Output_03_twas_data.RData")
-load("Input/Input_05b_JI_probes_mvalues.RData")
+load("Output/Output_03a_twas_data.RData")
 ```
 
 #Calculate the absolute number of overlapping CpGs between clocks.
@@ -64,7 +61,7 @@ OL42 <- length(na.omit(match(names(zhang), names(horvath))))
 OL43 <- length(na.omit(match(names(zhang), names(skinblood))))
 OL44 <- length(na.omit(match(names(zhang), names(zhang))))
 
-clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+clock.names <- c("Hannum Bld", "Horvath MT", "Horvath Skn/Bld", "Zhang Bld/Slv")
 OLtab <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total CpGs"), c(clock.names, "Total CpGs")))
 OLtab[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
 OLtab[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
@@ -78,63 +75,14 @@ OLtab
 write.csv(OLtab, file = "Output/Output_05a_clock_overlaps.csv")
 ```
 
-#To account for the differing clock sizes, calculate the Jaccard indices of two sets, divided by the maximum possible Jaccard index which would be found if all CpGs of the smaller set were also in the large set.
-```{r}
-Overlaps <- function(set1, set2){
-  (length(intersect(names(set1), names(set2))) / length(union(names(set1), names(set2)))) / 
-  (length(set1) / length(union(names(set1), names(set2))))
-}
-
-OL11 <- Overlaps(hannum, hannum)
-OL12 <- Overlaps(hannum, horvath)
-OL13 <- Overlaps(hannum, skinblood)
-OL14 <- Overlaps(hannum, zhang)
-
-OL21 <- Overlaps(horvath, hannum)
-OL22 <- Overlaps(horvath, horvath)
-OL23 <- Overlaps(horvath, skinblood)
-OL24 <- Overlaps(horvath, zhang)
-
-OL31 <- Overlaps(skinblood, hannum)
-OL32 <- Overlaps(skinblood, horvath)
-OL33 <- Overlaps(skinblood, skinblood)
-OL34 <- Overlaps(skinblood, zhang)
-
-OL41 <- Overlaps(zhang, hannum)
-OL42 <- Overlaps(zhang, horvath)
-OL43 <- Overlaps(zhang, skinblood)
-OL44 <- Overlaps(zhang, zhang)
-
-relative.overlaps <- round(as.data.frame(rbind(
-  c(OL11, OL12, OL13, OL14),
-  c(OL21, OL22, OL23, OL24),
-  c(OL31, OL32, OL33, OL34),
-  c(OL41, OL42, OL43, OL44)
-)), digits = 2)
-rownames(relative.overlaps) <- colnames(relative.overlaps) <- clock.names
-
-relative.overlaps <- matrix(nrow = 5, ncol = 5, dimnames = list(c(clock.names, "Total CpGs"), c(clock.names, "Total CpGs")))
-relative.overlaps[1,1:4] <- as.numeric(c(OL11, OL12, OL13, OL14))
-relative.overlaps[2,1:4] <- as.numeric(c(OL21, OL22, OL23, OL24))
-relative.overlaps[3,1:4] <- as.numeric(c(OL31, OL32, OL33, OL34))
-relative.overlaps[4,1:4] <- as.numeric(c(OL41, OL42, OL43, OL44))
-
-relative.overlaps[5,] <- c(length(hannum), length(horvath), length(skinblood), length(zhang), length(unique(names(all.clocks))))
-relative.overlaps[,5] <- relative.overlaps[5,]
-relative.overlaps <- round(relative.overlaps, digits = 2)
-relative.overlaps
-
-write.csv(relative.overlaps, file = "Output/Output_05b_clock_overlap_relative.overlaps.csv")
-```
-
 #Make a boxplot figure per clock, which contains the maximum correlations of each of that clock's CpGs with any CpG of one of the three other clocks (for instance, for each hannum CpG, find the horvath CpG with the largest correlation). This way, you can get an impression if any of the CpGs of the other clocks contain the same information as the CpGs of the index clock.
 ```{r}
-#Regress out age from the mvalues.
-fit <- lm(t(assay(mvalues.clocks)) ~ mvalues.clocks$sampling_age)
-res <- t(fit$residuals)
+# #Regress out age from the mvalues.
+# fit <- lm(t(assay(mvalues.clocks)) ~ mvalues.clocks$sampling_age)
+# res <- t(fit$residuals)
 
-#Calculate the correlation matrix. Also make an absolute copy of it to test whether correlations are different from 0 in either direction.
-cor.clocks <- cor(t(res), method = "pearson")
+#Calculate the correlation matrix. Also make an absolute copy of it to test whether correlations are different from 0 in either direction. (change assay(mvalues) to res if you choose to regress out age)
+cor.clocks <- cor(t(assay(mvalues.clocks)), method = "pearson")
 cor.abs <- abs(cor.clocks)
 cor.abs[1:10,1:10]
 
@@ -154,29 +102,29 @@ cor.11 <- Find.Max.Correlations(cor.abs.internal, hannum, hannum)
 cor.12 <- Find.Max.Correlations(cor.abs, hannum, horvath)
 cor.13 <- Find.Max.Correlations(cor.abs, hannum, skinblood)
 cor.14 <- Find.Max.Correlations(cor.abs, hannum, zhang)
-round(rbind(summary(cor.11), summary(cor.12), summary(cor.13), summary(cor.14)), digits = 2)
 
 cor.21 <- Find.Max.Correlations(cor.abs, horvath, hannum)
 cor.22 <- Find.Max.Correlations(cor.abs.internal, horvath, horvath)
 cor.23 <- Find.Max.Correlations(cor.abs, horvath, skinblood)
 cor.24 <- Find.Max.Correlations(cor.abs, horvath, zhang)
-round(rbind(summary(cor.21), summary(cor.22), summary(cor.23), summary(cor.24)), digits = 2)
 
 cor.31 <- Find.Max.Correlations(cor.abs, skinblood, hannum)
 cor.32 <- Find.Max.Correlations(cor.abs, skinblood, horvath)
 cor.33 <- Find.Max.Correlations(cor.abs.internal, skinblood, skinblood)
 cor.34 <- Find.Max.Correlations(cor.abs, skinblood, zhang)
-round(rbind(summary(cor.31), summary(cor.32), summary(cor.33), summary(cor.34)), digits = 2)
 
 cor.41 <- Find.Max.Correlations(cor.abs, zhang, hannum)
 cor.42 <- Find.Max.Correlations(cor.abs, zhang, horvath)
 cor.43 <- Find.Max.Correlations(cor.abs, zhang, skinblood)
 cor.44 <- Find.Max.Correlations(cor.abs.internal, zhang, zhang)
+
+round(rbind(summary(cor.11), summary(cor.12), summary(cor.13), summary(cor.14)), digits = 2)
+round(rbind(summary(cor.21), summary(cor.22), summary(cor.23), summary(cor.24)), digits = 2)
+round(rbind(summary(cor.31), summary(cor.32), summary(cor.33), summary(cor.34)), digits = 2)
 round(rbind(summary(cor.41), summary(cor.42), summary(cor.43), summary(cor.44)), digits = 2)
 
 #Merge the maximum correlations of each hannum CpG with all CpGs of each clock (including itself). Sort the dataframe by highest internal correlations.
-library(reshape)
-clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+library(reshape2)
 cor.hannum <- as.data.frame(rbind(cor.11, cor.12, cor.13, cor.14))
 cor.hannum <- cor.hannum[,order(cor.hannum[1,])]
 cor.hannum$clock.1 <- clock.names[1]
@@ -221,7 +169,7 @@ plot.theme <- list(
   theme_grey(base_size = 26), 
   theme(plot.title = element_blank(), 
         axis.title.x = element_blank(), axis.title.y = element_blank(), 
-        axis.text.y=element_text(face="bold"), axis.text.x = element_text(face = "bold", angle = 0, hjust = 0.5) 
+        axis.text.y=element_text(face="bold"), axis.text.x = element_text(size = 18, face = "bold", angle = 0, hjust = 0.5) 
         ),
   coord_cartesian(ylim = c(0, 1)),
   scale_y_continuous(breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)),
@@ -263,54 +211,146 @@ ggplot(data = test, aes(x = clock.2, y = max.cor, color = clock.2)) + geom_boxpl
 ggsave(filename = "Output/Plot_05a.1_Maximum_correlations_zhang.png", width = 5, height = 4, dpi = 300)
 ```
 
-#Check whether the cpgs cluster in a similar way in terms of correlation as in terms of association with gene expression.
-
-#                                                                                                   #
-#                                                                                                   #
-#                                                                                                   #
-    Move this chunk to script 9; it doesn't really fit here, because it uses output from script 9.
-#                                                                                                   #
-#                                                                                                   #
-#                                                                                                   #
-
+#Make a bar chart which shows, per clock pair, the number of CpGs which have a proxy with at least a correlation of 0.5, 0.7, or 0.9.
 ```{r}
-#NB: run script 9 for the clocks to get expr.clusters.
-cor.clusters <- cutree(x.hclust, k=4)
-expr.clusters <- cutree(y, k=4)
-
-#Overlap of all cpgs with the subset of cpgs which associate with gene expression.
-length(intersect(names(cor.clusters), names(expr.clusters))) / length(union(names(cor.clusters), names(expr.clusters)))
-
-#Overlap of the correlation-clusters and the association-clusters (k=4 for both).
-row1 <- c(
-  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 1])),
-  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 2])),
-  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 3])),
-  length(intersect(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 1], names(expr.clusters)[expr.clusters == 4]))
+proxys <- data.frame(
+  Correlation = rep(c(">0.5", ">0.7", ">0.9"), 12),
+  Index.clock = c(rep(clock.names[1], 9), rep(clock.names[2], 9), rep(clock.names[3], 9), rep(clock.names[4], 9)),
+  Percentage = NaN,
+  Comparison.clock = c(
+    rep(clock.names[2], 3), rep(clock.names[3], 3), rep(clock.names[4], 3),
+    rep(clock.names[1], 3), rep(clock.names[3], 3), rep(clock.names[4], 3),
+    rep(clock.names[1], 3), rep(clock.names[2], 3), rep(clock.names[4], 3),
+    rep(clock.names[1], 3), rep(clock.names[2], 3), rep(clock.names[3], 3))
 )
 
-row2 <- c(
-  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 1])),
-  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 2])),
-  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 3])),
-  length(intersect(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 2], names(expr.clusters)[expr.clusters == 4]))
-)
 
-row3 <- c(
-  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 1])),
-  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 2])),
-  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 3])),
-  length(intersect(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 3], names(expr.clusters)[expr.clusters == 4]))
-)
+#Fill in the values for hannum.
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[2]] > 0.5
+proxys$Percentage[1] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[2]] > 0.7
+proxys$Percentage[2] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[2]] > 0.9
+proxys$Percentage[3] <- length(which(idx == T)) / length(idx)
 
-row4 <- c(
-  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 1])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 1])),
-  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 2])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 2])),
-  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 3])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 3])),
-  length(intersect(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 4])) / length(union(names(cor.clusters)[cor.clusters == 4], names(expr.clusters)[expr.clusters == 4]))
-)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[3]] > 0.5
+proxys$Percentage[4] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[3]] > 0.7
+proxys$Percentage[5] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[3]] > 0.9
+proxys$Percentage[6] <- length(which(idx == T)) / length(idx)
 
-cluster.overlap <- rbind(row1, row2, row3, row4)
-dimnames(cluster.overlap) <- list(c("cor1", "cor2", "cor3", "cor4"), c("expr1", "expr2", "expr3", "expr4"))
-cluster.overlap
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[4]] > 0.5
+proxys$Percentage[7] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[4]] > 0.7
+proxys$Percentage[8] <- length(which(idx == T)) / length(idx)
+idx <- melt.hannum$max.cor[melt.hannum$clock.2 == clock.names[4]] > 0.9
+proxys$Percentage[9] <- length(which(idx == T)) / length(idx)
+
+
+#Fill in the values for horvath.
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[2]] > 0.5
+proxys$Percentage[10] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[2]] > 0.7
+proxys$Percentage[11] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[2]] > 0.9
+proxys$Percentage[12] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[3]] > 0.5
+proxys$Percentage[13] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[3]] > 0.7
+proxys$Percentage[14] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[3]] > 0.9
+proxys$Percentage[15] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[4]] > 0.5
+proxys$Percentage[16] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[4]] > 0.7
+proxys$Percentage[17] <- length(which(idx == T)) / length(idx)
+idx <- melt.horvath$max.cor[melt.horvath$clock.2 == clock.names[4]] > 0.9
+proxys$Percentage[18] <- length(which(idx == T)) / length(idx)
+
+
+#Fill in the values for skinblood.
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[2]] > 0.5
+proxys$Percentage[19] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[2]] > 0.7
+proxys$Percentage[20] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[2]] > 0.9
+proxys$Percentage[21] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[3]] > 0.5
+proxys$Percentage[22] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[3]] > 0.7
+proxys$Percentage[23] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[3]] > 0.9
+proxys$Percentage[24] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[4]] > 0.5
+proxys$Percentage[25] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[4]] > 0.7
+proxys$Percentage[26] <- length(which(idx == T)) / length(idx)
+idx <- melt.skinblood$max.cor[melt.skinblood$clock.2 == clock.names[4]] > 0.9
+proxys$Percentage[27] <- length(which(idx == T)) / length(idx)
+
+
+#Fill in the values for zhang.
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[2]] > 0.5
+proxys$Percentage[28] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[2]] > 0.7
+proxys$Percentage[29] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[2]] > 0.9
+proxys$Percentage[30] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[3]] > 0.5
+proxys$Percentage[31] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[3]] > 0.7
+proxys$Percentage[32] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[3]] > 0.9
+proxys$Percentage[33] <- length(which(idx == T)) / length(idx)
+
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[4]] > 0.5
+proxys$Percentage[34] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[4]] > 0.7
+proxys$Percentage[35] <- length(which(idx == T)) / length(idx)
+idx <- melt.zhang$max.cor[melt.zhang$clock.2 == clock.names[4]] > 0.9
+proxys$Percentage[36] <- length(which(idx == T)) / length(idx)
+
+#For readibility, add a rounded percentage column.
+proxys$Perc.100 <- round(proxys$Percentage, 2) * 100
+proxys
+
+#ggplot wants the percentages to exclude the other groups.
+#For example, if 50% has a 0.5 proxy, 20% a 0.7 proxy, and 5% a 0.9 proxy, you need to mark the 0.5 group as 25% (50-20-5).
+idx <-  1:nrow(proxys) %% 3
+cor0.5 <- proxys[idx == 1,]
+cor0.7 <- proxys[idx == 2,]
+cor0.9 <- proxys[idx == 0,]
+
+cor0.5$Percentage <- cor0.5$Percentage - cor0.7$Percentage
+cor0.7$Percentage <- cor0.7$Percentage - cor0.9$Percentage
+
+proxys[idx == 1,"Percentage"] <- cor0.5$Percentage
+proxys[idx == 2,"Percentage"] <- cor0.7$Percentage
+proxys
+
+#Finally, prepare plot labels for proper formatting.
+proxys$Comparison.clock <- gsub(pattern = " ", replacement = "\n", x = proxys$Comparison.clock)
+proxys
+
+#Plot the data.
+ggplot(proxys, aes(fill=Correlation, y=Percentage, x=Comparison.clock)) + 
+  theme_grey(base_size = 13) +
+  theme(plot.title = element_blank(), 
+        axis.text.x = element_text(face = "bold", hjust = 0.5), axis.text.y = element_text(face = "bold"),
+        strip.text = element_text(size = 13),
+        axis.title.x = element_blank(), axis.title.y = element_text(face = "bold"),
+        legend.position = "top", legend.direction = "horizontal", legend.text = element_text()) +
+  geom_bar(position="stack", stat="identity", color = "black", width = 0.6) +
+  facet_wrap(~Index.clock, scales = "free", nrow = 2, ncol = 2) +
+  scale_fill_brewer(palette = "Blues", guide = guide_legend(title.position = "top", label.position = "right", title.hjust = 0.5)) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1.0)) +
+  ylab("Fraction")
+
+ggsave(filename = "test/proxys.png", width = 6, height = 6)
 ```

@@ -12,17 +12,23 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Script information
 
-This script was written to analyze the results of the TWAS of CpGs from 4 epigenetic clocks (hannum, horvath, skinblood, zhang) and the reference set (refset).
+This script analyzes the results of the TWAS investigating the correlation between clock CpG DNAm and gene expression. 
 
-This script was developed using R version 3.4.3 (64-bits).
+This script does a few things:
+
+1) Split the associations into cis (<100kB distance) and trans (>5MB distance or different chromosomes). Ranges between 100kB and 5MB were discarded.
+2) For the trans-associations, select a core set of genes and CpGs and plot their t-statistics in a heatmap.
+3) For both cis- and trans-associations, plot the number of associations per CpG in a bar chart.
+4) Analyze overlap between each clock's associating cis- and trans-genes.
+5) Analyze gene ontology (GO) enrichments for each clock's associating cis- and trans-genes.
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(SummarizedExperiment)
@@ -56,7 +62,7 @@ load("Output/Output_01b_450K_annotation.RData")
 
 #Load clocks and refset.
 load("Output/Output_03b_clocks_full.RData")
-load("Output/Output_03c_refset_full.RData")
+# load("Output/Output_03c_refset_full.RData")
 
 #Change the name of the 'all.clocks' object to make the code easier to edit.
 clocks <- all.clocks
@@ -308,7 +314,7 @@ cis.zhang <- Analysis.cis(CpG.set.name = "zhang", padj = padj.cis.zhang)
 trans.zhang <- Analysis.trans(CpG.set = zhang, CpG.set.name = "zhang", padj = padj.trans.zhang)
 ```
 
-#Prepare the associations between the CpGs and the trans-genes for plotting in a series of heatmaps.
+#Plot the associations between the CpGs and the trans-genes in a heatmap.
 The following genes/CpGs will be included:
 - Genes which associate with at least 5% of the CpGs of at least one clock in trans.
 - CpGs which associate with at least 10 genes in trans.
@@ -334,6 +340,12 @@ sig.genes <- unique(c(
 sig.cpgs <- trans.clocks$cpg.assoc[trans.clocks$cpg.assoc$`Number of associations` >= 10, "CpG"]
 sig.associations <- t.trans[sig.genes,sig.cpgs]
 dim(sig.associations)
+
+#############
+backup <- read.csv("test/sig.assoc.csv", row.names = 1)
+sig.associations <- t.trans[rownames(backup),colnames(backup)]
+dim(sig.associations)
+#############
 
 #Create a matrix of all unique genes and cpgs which associate with 1 gene/cpg.
 all.genes <- unique(c(
@@ -377,10 +389,7 @@ y <- hclust(dist(t(sig.associations)), method = "complete")
 #Define color palette and breaks of the heatmap.
 my.palette <- colorRampPalette(c("#0000cc", "#0000ff", "#ffffff", "#ff0000", "#cc0000"))(n = 400)
 my.breaks <- seq(-12, 12, length=401)
-```
 
-#Heatmap 1: 4 sidebars which mark whether the CpGs belong to the 4 clocks (black = yes, white = no).
-```{r}
 #Define 4 sidebars which mark whether the CpGs belong to the 4 clocks (black = yes, white = no).
 top.palette <- colorRampPalette(c("#ffffff", "#000000")) (n = 2)
 col.hannum <- top.palette[as.factor(hm.cpgs$hannum)]
@@ -400,10 +409,9 @@ colnames(col.mat) <- clock.names
 png(file = "Output/Plot_09a.1_Top.trans_heatmap_clocks.png", width = 8, height = 9, unit = "in", res = 600)
 heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, ColSideColors = col.mat, ColSideColorsSize=4.0, symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
 dev.off()
-```
 
-#Heatmap 2: three sidebars with genomic annotations for the CpGs.
-```{r}
+#Define three sidebars with genomic annotations for the CpGs.
+
 #Sidebar 1: magenta-white-green based on mean DNA methylation (M-value negative, zero, or positive, respectively) of the CpG in people <=30 years.
 hm.cpg.mean <- cut(hm.cpgs$Mean.Mvalue.below.30, breaks = c(-7, -5, -3, -1, 1, 3, 5, 7), labels = c(-7, -5, -3, -1, 1, 3, 5)) 
 top.palette <- colorRampPalette(c("#770077", "#cc00cc", "#ff00ff", "#ffffff", "#00ff00", "#00aa00", "#007700")) (n = 7)
@@ -435,37 +443,8 @@ colnames(col.mat) <- c("Young methylation", "Age correlation", "CGI feature", "H
 png(file = "Output/Plot_09a.2_Top.trans_heatmap_genomic_regions.png", width = 8, height = 9, unit = "in", res = 600)
 heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, ColSideColors = col.mat, ColSideColorsSize=4.0, symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
 dev.off()
-```
-
-#Heatmap 3: age correlation of trans-genes according to Peters et al. (https://www.nature.com/articles/ncomms9570) (yellow = positive, purple = negative).
-```{r}
-#Define a sidebar which marks whether the genes significantly correlate with age, and if so, in which direction.
-load("test/trans.annot.RData")
-trans.annot
-
-hm.gene.cor <- trans.annot$age.cor.peters
-hm.gene.cor[!trans.annot$peters.sig] <- NA
-top.palette <- colorRampPalette(c("#aa00ff", "#ffff00")) (n = 2)
-row.cor <- top.palette[hm.gene.cor]
-
-#Add the vectors containing the color sequences for the three sidebars into one matrix (required input format for the heatmap.3 function).
-row.mat <- rbind(row.cor)
-rownames(row.mat) <- "Age correlation"
-
-#Draw heatmap. The CpGs (columns) have the following sidebars:
-#Sidebar 1 is a continuous magenta-white-green scale based on the mean methylation level of the CpG in young people (<=30 years). M-values below 0 (unmethylated) are magenta, while M-values above 0 (methylated) are green. M-values of 0 (half-methylated) are white.
-#Sidebar 2 is a discrete yellow-grey-purple scale based on whether the CpG is located on a CGI (yellow), shore (grey), or neither (purple).
-#Sidebar 3 is a discrete black-white scale based on whether CpG is on a H3K27me3 mark (black) or not (white).
-png(file = "Output/Plot_09a.3_Top.trans_heatmap_gene.age.cor.png", width = 8.25, height = 8, unit = "in", res = 600)
-heatmap.3(sig.associations, Rowv=as.dendrogram(x), Colv=as.dendrogram(y), col = my.palette, breaks = my.breaks, margins = c(2, 2), 
-          trace = "none", density.info = "none", dendrogram = "both", keysize = 0.8, cexRow = 0.25, cexCol = 0.15, 
-          RowSideColors = row.mat, RowSideColorsSize=1.0, 
-          symkey = F, KeyValueName="t-statistic", labCol = colnames(sig.associations), labRow=GeneEns[rownames(sig.associations)]$symbol)
-dev.off()
-```
 
 #Investigate the internal and external correlations of the two gene and cpg clusters.
-```{r}
 cl.cpgs <- cutree(hclust(dist(t(sig.associations))), k = 2)
 cl.genes <- cutree(hclust(dist(sig.associations)), k = 2)
 

@@ -11,13 +11,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This script was written to annotate CpGs of the Illumina Infinium 450K DNA methylation array with genic features, CGI features, chromatin states, histone modifications, and EZH2 binding sites.
 
-This script was developed using R version 3.4.3 (64-bits).
-
 #Gene annotation
 
-This script was written to prepare genic feature regions for each gene. Gene-centric annotation was done based on the protein-coding genes in Ensembl build 75 (genome hg19).
-
-Gene-centric annotation was split in 6 regions:
+Gene-centric annotation was done based on the protein-coding genes in Ensembl build 75 (genome hg19), and was split in 6 regions:
 1) Distal promoter: 10kb - 1.5 kb upstream of the start of exon 0 of any protein-coding gene (obtained from Ensembl).
 2) Proximal promoter: 1.5 kb upstream to 0.5 kb downstream of the start of exon 0 (so 500 bp overlap).
 3) Exons, as annotated by Ensembl.
@@ -38,13 +34,10 @@ Schematic representation of the gene-centric annotation:
                                 ^^^^^^  
                               500bp overlap
 
-
-These features will be bound to the Infinium 450K CpGs in script 4, together with CGI-centric annotations. 
-
 #CGI feature annotation
 
 CGI-centric annotation was split in 3 regions:
-1)	CGIs, as annotated by UCSC.
+1)	CGIs, as annotated by UCSC (hg19).
 2)	Shores: 2 kb regions flanking the CGIs (both up- and downstream).
 3)	Non-CGI: none of the above.
 
@@ -56,9 +49,9 @@ Schematic representation of the CGI-centric annotation:
 ----------------------|-------|-------|-------|----------------------
 
 #Chromatin state and histone modification annotation
-This following code was written to obtain chromatin state segments and histone modifications from Epigenomics Roadmap (accessed through the AnnotationHub package), and annotate these data to the Infinuim 450K CpGs. NB: the Epigenomics Roadmap contains chromatinstate data for 127 tissue types; for this analysis, we chose 7 primary blood cell types: PBMCs, monocytes, neutrophils, B-cells, CD4 T-cells, CD8-T-cells, and NK-cells. For histone modifications, only one cell type (PBMCs) was used; the reason for this is that in prelimianry analysis, chromatin states showed great overlap between cell types, so it doesn't really matter which cell type one chooses.
+This code was written to obtain chromatin state segments and histone modifications from Epigenomics Roadmap (accessed through the AnnotationHub package), and annotate these data to the Infinium 450K CpGs. NB: the Epigenomics Roadmap contains chromatin state data for 127 tissue types; for this analysis, we chose PBMCs as the closest proxy to our samples measured in whole blood.
 
-Instructions on how to use the EPigenomics Roadmap histone modification files (including recommendations on cutoff values): 
+Instructions on how to use the Epigenomics Roadmap histone modification files (including recommendations on cutoff values): 
 http://genome.ucsc.edu/FAQ/FAQformat.html#format13
 https://sites.google.com/site/anshulkundaje/projects/encodehistonemods
 https://www.nature.com/articles/nature14248
@@ -79,10 +72,10 @@ The data on EZH2-binding sites was obtained from ENCODE file ENCFF126CZP, which 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(EnsDb.Hsapiens.v75)

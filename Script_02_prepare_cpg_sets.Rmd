@@ -11,19 +11,17 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This script was written to prepare Genomic Ranges objects of 4 epigenetic clocks:
 - Hannum Bld: 71 CpGs (Hannum G et al. Genome-wide methylation profiles reveal quantitative views of human aging rates. Mol Cell. 2013)
-- Horvath PT: 353 CpGs (aDMCs) (Horvath S. DNA methylation age of human tissues and cell types. Genome Biol. 2013)
+- Horvath MT: 353 CpGs (aDMCs) (Horvath S. DNA methylation age of human tissues and cell types. Genome Biol. 2013)
 - Horvath Skn/Bld: 391 CpGs (Horvath S et al. Epigenetic Clock for Skin and Blood Cells Applied to Hutchinson Gilford Progeria Syndrome and ex vivo Studies. Aging. 2018)
 - Zhang Bld/Slv: 514 aDMCs included in Zhang et al's epigenetic clock (Zhang Q et al. Improved precision of epigenetic clock estimates across tissues and its implication for biological ageing. Genome Med. 2019)
-
-This script was developed using R version 3.4.3 (64-bits).
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(GenomicRanges)
@@ -64,29 +62,16 @@ all.clocks$horvath[match(names(horvath), names(all.clocks))] <- T
 all.clocks$skinblood[match(names(skinblood), names(all.clocks))] <- T
 all.clocks$zhang[match(names(zhang), names(all.clocks))] <- T
 all.clocks
+
+#Make a reference set of non-clock CpGs. This will be used as a background for enrichment testing.
+idx <- match(names(all.clocks), names(ann450K))
+non.clock <- ann450K[-idx]
 ```
 
 #Save the CpG sets.
 ```{r}
 save(hannum, horvath, skinblood, zhang, all.clocks, file = "Output/Output_02a_clocks.RData")
-```
-
-#Prepare one reference CpG set for the clocks.
-NB: the reference set will be as large as the combination of CpGs from all 4 clocks (with duplicates removed), which is 1146 CpGs in total.
-```{r}
-#Set the pseudo-random number generator seed for reproducibility.
-set.seed(1)
-
-idx <- match(names(all.clocks), names(ann450K))
-non.clock <- ann450K[-idx]
-idx <- sort(sample(1:length(non.clock), length(all.clocks), replace = F))
-refset <- non.clock[idx]
-refset
-```
-
-#Save the reference CpG set.
-```{r}
-save(non.clock, refset, file = "Output/Output_02b_refset.RData")
+save(non.clock, file = "Output/Output_02b_non.clock.RData")
 ```
 
 #Session info.

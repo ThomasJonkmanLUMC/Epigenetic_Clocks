@@ -9,17 +9,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Script information
 
-In this script, the DNA methylation clocks will be used to predict age.
-
-This script was developed using R version 3.4.3 (64-bits).
+This script was written to apply the 4 investigated clocks to the DNAm data to predict age. The clock coefficients were downloaded from their respective publications. Since the clocks expect beta-values instead of m-values (which were prepared in the previous script), the first chunk loads in beta-values (SummarizedExperiment, CpG x sample), puts them in the same format as the m-values, then does age prediction.
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(SummarizedExperiment)
@@ -33,11 +31,13 @@ options(stringsAsFactors = F)
 #Load DNA methylation data as beta-values (large, will take ~30 minutes to load. If you have already run this script before, start at the next chunk).
 ```{r}
 # library(BBMRIomics)
-# data(methData_Betas_BIOS_Freeze2_unrelated)
-# #data(package = "BBMRIomics")
+# load("~/researchdrive/RSC BIOS/RP3_data/IlluminaHumanMethylation450k/450k/methData_Betas_BIOS_Freeze2_unrelated.RData")
+# save(betas, file = "Input/Large files/DNAm betas.RData")
+# 
+# betas
 # 
 # #Select only CpGs which belong to at least one of the 4 clocks.
-# load("Output/Output_02a_all_aDMP_sets.RData")
+# load("Output/Output_02a_clocks.RData")
 # rm(horvath, hannum, zhang, skinblood)
 # 
 # #Prepare a dataframe containing chronological age of all participants.
@@ -68,8 +68,9 @@ betas
 #OPTIONAL: select only the samples which were selected for the TWAS.
 load("Output/Output_03a_twas_data.RData")
 rm(counts, RIN.counts)
-idx <- which(mvalues.clocks$flowcell_num == "30a" | mvalues.clocks$flowcell_num == "30b" | mvalues.clocks$sample_plate == "OV0192DNA001" | mvalues.clocks$sample_plate == "OV0192DNA002")
-mvalues.clocks <- mvalues.clocks[,-idx]
+# idx <- which(mvalues.clocks$flowcell_num == "30a" | mvalues.clocks$flowcell_num == "30b" | mvalues.clocks$sample_plate == "OV0192DNA001" | mvalues.clocks$sample_plate == "OV0192DNA002")
+# mvalues.clocks <- mvalues.clocks[,-idx]
+mvalues.clocks
 betas <- betas[, colnames(mvalues.clocks)]
 betas
 
@@ -234,8 +235,6 @@ head(age.raw)
 
 #Save predicted ages.
 pred.zhang <- age.raw
-
-save(pred.hannum, pred.horvath, pred.skinblood, pred.zhang, file = "Output/Output_04b_predicted_ages.RData")
 ```
 
 #Plot the data.
@@ -398,6 +397,24 @@ ggplot(data=pred.errors.merge, aes(x=pred.2, y=pred.1)) +
   scale_y_continuous(breaks=c(-20, 0, 20, 40, 60))
 
 ggsave("Output/Plot_04b_Age_prediction_error_correlation.png", width = 11.5, height = 12, dpi = 300)
+
+
+#Save the age predictions and errors.
+age.pred <- data.frame(id = pred.age$person.ID,
+                              age = pred.age$age, 
+                              
+                              hannum = pred.age$hannum,
+                              horvath = pred.age$horvath,
+                              skinblood = pred.age$skinblood,
+                              zhang = pred.age$zhang,
+                              
+                              hannum.error = pred.errors$hannum,
+                              horvath.error = pred.errors$horvath,
+                              skinblood.error = pred.errors$skinblood,
+                              zhang.error = pred.errors$zhang
+                              )
+head(age.pred)
+save(age.pred, file = "Output/Output_04b_predicted_ages.RData")
 ```
 
 #Analyze whether the outliers of one clock (predicted age error >10 years) are also outliers in the other clocks.

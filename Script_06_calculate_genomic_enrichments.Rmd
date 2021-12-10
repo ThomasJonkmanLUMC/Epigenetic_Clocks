@@ -9,17 +9,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Script information
 
-This script was written to test if aDMPs (hannum) are enriched for certain annotations. This is done by caluculating the odds ratios of them falling into certain annotations compared to a random set of reference CpGs (ref.hannum).
-
-This script was developed using R version 3.4.3 (64-bits).
+This script was written to test if clock CpGs are enriched for certain annotations. This is done by caluculating the odds ratios of them falling into certain annotations compared to all non-clock CpGs on the 450K array.
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(GenomicRanges)
@@ -31,12 +29,11 @@ library(gplots)
 #Load 450K annotation, hannum CpGs, and reference set.
 load("Output/Output_01b_450K_annotation.RData")
 load("Output/Output_03b_clocks_full.RData")
-load("Output/Output_03c_refset_full.RData")
+load("Output/Output_03c_non.clock.RData")
 
 idx <- colnames(values(all.clocks))[grep("H3K", colnames(values(all.clocks)))]
 for(i in idx){
   values(all.clocks)[,i] <- factor(values(all.clocks)[,i])
-  values(refset)[,i] <- factor(values(refset)[,i])
   values(non.clock)[,i] <- factor(values(non.clock)[,i])
 }
 
@@ -179,7 +176,7 @@ OR.zhang$`Odds ratio`[OR.zhang$p.adj >= 0.05] <- 1
 #Merge the odds ratio tables into one table, and transform the results onto a log2-scale for visualization.
 OR.merge <- cbind(OR.hannum$`Odds ratio`, OR.horvath$`Odds ratio`, OR.skinblood$`Odds ratio`, OR.zhang$`Odds ratio`)
 rownames(OR.merge) <- rownames(OR.hannum)
-clock.names <- c("Hannum Bld", "Horvath PT", "Horvath Skn/Bld", "Zhang Bld/Slv")
+clock.names <- c("Hannum Bld", "Horvath MT", "Horvath Skn/Bld", "Zhang Bld/Slv")
 colnames(OR.merge) <- clock.names
 OR.merge <- log2(OR.merge)
 OR.merge
@@ -204,7 +201,7 @@ my.breaks <- seq(-3, 3, length = 12)
 
 #Plot the odds ratios in a heatmap.
 png(file = file.path, width = 2, height = 6, unit = "in", res = 300)
-heatmap.2(plot.data, Colv = F, Rowv = F, dendrogram = "none", trace = "none", col = my.palette, breaks = my.breaks, density.info = "none", key = F, keysize = 0.1, margins = c(7.5, 5.5), cexRow = 1, cexCol = 1, na.color=par("bg"))
+heatmap.2(plot.data, Colv = F, Rowv = F, dendrogram = "none", trace = "none", col = my.palette, breaks = my.breaks, density.info = "none", key = F, keysize = 0.1, margins = c(8, 6), cexRow = 1, cexCol = 1, na.color=par("bg"))
 dev.off()
 }
 ```

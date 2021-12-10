@@ -9,17 +9,22 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Script information
 
-<Description goes here>
+This script was written to load in the DNAm and gene expression data for the 3,132 whole blood samples comprising our dataset. Both the DNAm and gene expression data were already pre-processed. The DNAm data are in the mvalue format. The genes are in the raw count format.
 
-This script was developed using R version 3.4.3 (64-bits).
+The input files are expected to be SummarizedExperiment files, where rows are 450K CpGs or genes, and columns are samples. The ColData of these objects should contain the covariates, such as age and sex. Note that the input files contain more than 3,132 samples: some filtering steps will be performed to select the the desired genes, CpGs, and samples.
+
+The output files are as follows:
+- mvalues.clocks: a SummarizedExperiment of the 1,146 clock CpGs in 3,132 samples.
+- counts: a SummarizedExperiment of the 14.000 genes with expression in blood in 3,132 samples.
+- RIN.counts: a matrix of the same genes, with rank-inverse normal transformation for each gene (giving it a mean/sd of 0/1 across all samples).
 
 #Setup
 ```{r}
 #Set working directory.
-setwd("/mnt/virdir/Backup/tjonkman/epigenetic-clocks/")
+setwd("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks")
 
-#Set library path.
-.libPaths("/mnt/virdir/Backup/tjonkman/Rlibs")
+#set library path.
+.libPaths("/home/tjonkman/researchdrive/tjonkman/epigenetic-clocks/Packages")
 
 #Load all necessary libraries.
 library(BBMRIomics)
@@ -34,10 +39,10 @@ options(stringsAsFactors = F)
 #data(package="BBMRIomics")
 
 #Load RNA-seq data.
-data(rnaSeqData_ReadCounts_BIOS_Freeze2_unrelated)
+load("~/researchdrive/RSC BIOS/RP3_data/RNASeq/v2.1.3/gene_read/rnaSeqData_ReadCounts_BIOS_Freeze2_unrelated.RData")
 
 #Load DNA-methylation data (large, takes about 30 minutes).
-data(methData_Mvalues_BIOS_Freeze2_unrelated)
+load("~/researchdrive/RSC BIOS/RP3_data/IlluminaHumanMethylation450k/450k/methData_Mvalues_BIOS_Freeze2_unrelated.RData")
 
 #Load sample data (NOTE: this file is derived from DNA-methylation colData, with columns added for corrected sex and imputed cell counts).
 load("Input/Input_03_sample_data.RData")
@@ -104,15 +109,14 @@ mvalues$flowcell_num <- factor(mvalues$flowcell_num)
 
 #Select CpG sets.
 ```{r}
-#Load protein-coding genes, aVMCs and reference CpGs.
+#Load protein-coding genes, clock CpGs and background CpGs.
 load("Output/Output_01a_ensembl_genes.RData")
 load("Output/Output_02a_clocks.RData")
-load("Output/Output_02b_refset.RData")
+load("Output/Output_02b_non.clock.RData")
 
-# Select the CpGs belonging to the clocks and their reference set.
+# Select the CpGs belonging to the clocks and the background.
 mvalues.clocks <- mvalues[names(all.clocks),]
 mvalues.non.clock <- mvalues[names(non.clock),]
-mvalues.refset <- mvalues[names(refset),]
 ```
 
 #Select protein-coding genes with sufficient counts, then transform the counts into counts per million. Also, perform a rank-inverse normal transformation to make them normally distributed.
@@ -145,9 +149,8 @@ RIN.counts <- t(apply(log.cpm, 1, RIN))
 ```{r}
 save(mvalues.clocks, counts, RIN.counts,
      file = "Output/Output_03a_twas_data.RData")
-
-save(mvalues.refset, mvalues.non.clock,
-     file = "test/Output_03a.2_twas_data.refset.RData")
+save(non.clock, mvalues.non.clock,
+     file = "Output/Output_03c_non.clock.RData")
 ```
 
 #Calculate the correlation of each CpG with chronological age and its mean methylation level in people below 30 years of age.
@@ -156,28 +159,12 @@ save(mvalues.refset, mvalues.non.clock,
 age.cor <- cor(t(assay(mvalues.clocks)), mvalues.clocks$sampling_age)
 all.clocks$Age.cor <- as.numeric(age.cor)
 
-age.cor <- cor(t(assay(mvalues.refset)), mvalues.refset$sampling_age)
-refset$Age.cor <- as.numeric(age.cor)
-
-age.cor <- cor(t(assay(mvalues.non.clock)), mvalues.non.clock$sampling_age)
-non.clock$Age.cor <- as.numeric(age.cor)
-
 #Mean in young
 m.clocks.young <- mvalues.clocks[,which(mvalues.clocks$sampling_age <= 30)]
 young.clocks.rowMeans <- rowMeans(assay(m.clocks.young))
 all.clocks$Mean.Mvalue.below.30 <- young.clocks.rowMeans
 
-m.refset.young <- mvalues.refset[,which(mvalues.refset$sampling_age <= 30)]
-young.ref.rowMeans <- rowMeans(assay(m.refset.young))
-refset$Mean.Mvalue.below.30 <- young.ref.rowMeans
-
-m.non.clock.young <- mvalues.non.clock[,which(mvalues.non.clock$sampling_age <= 30)]
-young.non.clock.rowMeans <- rowMeans(assay(m.non.clock.young))
-non.clock$Mean.Mvalue.below.30 <- young.non.clock.rowMeans
-
 all.clocks
-refset
-non.clock
 
 #Select clocks.
 hannum <- all.clocks[all.clocks$hannum,]
@@ -186,7 +173,6 @@ skinblood <- all.clocks[all.clocks$skinblood,]
 zhang <- all.clocks[all.clocks$zhang,]
 
 save(hannum, horvath, skinblood, zhang, all.clocks, file = "Output/Output_03b_clocks_full.RData")
-save(non.clock, refset, file = "Output/Output_03c_refset_full.RData")
 ```
 
 #Session info.
